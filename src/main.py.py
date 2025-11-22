@@ -11,7 +11,23 @@ try:
 except Exception:
       DateEntry = None
       _HAS_TKCALENDAR = False   # Yüklü değilse fallback olarak Entry kullanılacak
+      
 from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL      
+from analysis import calculate_kmeans_labels, calculate_pareto_mask, calculate_regression_line
+from utils import (
+    external_resource_path, 
+    enable_per_monitor_dpi_awareness, 
+    force_baseline_scaling, 
+    show_splash, 
+    splash_set,
+    center_on_screen
+)
+
+from ui_components import (
+    set_tooltip, 
+    create_collapsible_stat_card, 
+    center_over_parent
+)
 
 CHURN_X_COLOR = 'red' 
 CHURN_DATE_COL = 'Churn Date'
@@ -84,28 +100,6 @@ def preload_handbook_images():
 _tt_win = None
 _tt_lbl = None
 
-def set_tooltip(text, x_root, y_root):
-      global _tt_win, _tt_lbl
-      # Metin yoksa gizle
-      if not text:
-            if _tt_win: _tt_win.withdraw()
-            return
-
-      # Pencere yoksa oluştur (Sadece 1 kere çalışır)
-      if _tt_win is None:
-            _tt_win = tk.Toplevel()
-            _tt_win.overrideredirect(True)           # Çerçeveyi kaldır
-            _tt_win.attributes("-topmost", True) # <--- İŞTE ARADIĞIN ÖNCELİK AYARI
-            _tt_win.config(bg="#ffffe0")
-            _tt_lbl = tk.Label(_tt_win, bg="#ffffe0", justify="left", relief="solid", bd=1, font=("Segoe UI", 9))
-            _tt_lbl.pack()
-
-      # Metni güncelle ve farenin yanına taşı
-      _tt_lbl.config(text=text)
-      _tt_win.geometry(f"+{x_root + 20}+{y_root + 20}")
-      _tt_win.deiconify()
-      _tt_win.lift()
-
 PAD_RATIO = 0.1   # fit_to_data padding yüzdesi
 
 # ---- Küçük ayarlar (isteklerin) ----
@@ -166,178 +160,22 @@ settings_state = {
       "fixed_regression_params": None,      # Sabitlenen m ve b değerlerini tutacak sözlük
 }
 
-
-def _enable_per_monitor_dpi_awareness():
-      """
-      OS tarafındaki bulanık bitmap ölçeklemeyi kapatmak için uygulamayı DPI-aware yap.
-      Bu işlem yerleşimi DEĞİŞTİRMEZ; sadece işletim sisteminin müdahalesini engeller.
-      """
-      if not _IS_WINDOWS:
-            return
-      try:
-            user32 = ctypes.windll.user32
-            # Windows 10+: PER_MONITOR_AWARE_V2
-            if hasattr(user32, "SetProcessDpiAwarenessContext"):
-                  user32.SetProcessDpiAwarenessContext.restype = wintypes.BOOL
-                  user32.SetProcessDpiAwarenessContext.argtypes = [wintypes.HANDLE]
-                  # -4: DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-                  if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
-                        return
-      except Exception:
-            pass
-      try:
-            ctypes.windll.shcore.SetProcessDpiAwareness(2)   # PER_MONITOR_DPI_AWARE
-      except Exception:
-            try:
-                  ctypes.windll.user32.SetProcessDPIAware()   # fallback
-            except Exception:
-                  pass
-
-def force_baseline_scaling(root, baseline_dpi=96):
-      """
-      Tk'nin ölçek değerini sabit 96 DPI referansına kilitle.
-      Böylece 1920x1080 / %100 ölçekte nasıl görünüyorsa HER monitörde aynı piksel yerleşimi korunur.
-      """
-      try:
-            root.tk.call('tk', 'scaling', float(baseline_dpi) / 72.0)   # 96/72 = 1.333...
-      except Exception:
-            pass
-
-# ========================== Kaynak yolu yardımcı ==========================
-def external_resource_path(*parts):
+def _risk_allowed(risk_val: str) -> bool:
     """
-    GÜNCELLENDİ: Kod 'src' klasöründe olduğu için, kaynakları bulmak adına
-    bir üst klasöre (project root) çıkar.
+    Bir müşterinin risk durumuna göre gösterilip gösterilmeyeceğine karar verir.
+    Global settings_state sözlüğünü kullanır.
     """
-    if getattr(sys, "frozen", False):
-        # Exe olduğunda (bunu şimdilik dert etme)
-        base = os.path.dirname(sys.executable)
-    else:
-        # .py çalışırken: Şu anki dosyanın (main.py) olduğu yerin BİR ÜSTÜNÜ al
-        current_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
-        base = os.path.dirname(current_dir) # <-- İşte sihirli dokunuş: Bir üst klasöre çık
-        
-    return os.path.join(base, *parts)
-
-# ========================== Splash Helpers ==========================
-def center_on_screen(win, w, h, y_offset=0):
-      """Splash/Toplevel her zaman ekranın tam ortasında; y_offset ile çok hafif yukarı/aşağı kaydırılabilir."""
-      try:
-            # --- Windows: bulunduğu monitörün çalışma alanına göre tam ortala ---
-            if _IS_WINDOWS:
-                  user32 = ctypes.windll.user32
-
-                  class RECT(ctypes.Structure):
-                        _fields_ = [("left", wintypes.LONG), ("top", wintypes.LONG),
-                                          ("right", wintypes.LONG), ("bottom", wintypes.LONG)]
-
-                  class MONITORINFO(ctypes.Structure):
-                        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", RECT),
-                                          ("rcWork", RECT), ("dwFlags", wintypes.DWORD)]
-
-                  hwnd = wintypes.HWND(int(win.winfo_id()))
-                  MONITOR_DEFAULTTONEAREST = 2
-                  hmon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
-                  mi = MONITORINFO()
-                  mi.cbSize = ctypes.sizeof(MONITORINFO)
-                  if user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
-                        # Çalışma alanı (taskbar hariç)
-                        work = mi.rcWork
-                        work_w = work.right - work.left
-                        work_h = work.bottom - work.top
-                        x = work.left + int((work_w - w) / 2)
-                        y = work.top + int((work_h - h) / 2) + int(y_offset)
-                        if y < 0:
-                              y = 0
-                        win.geometry(f"{w}x{h}+{x}+{y}")
-                        return
-
-            # --- Diğer platformlar: klasik merkezleme ---
-            sw = win.winfo_screenwidth()
-            sh = win.winfo_screenheight()
-            x = int((sw - w) / 2)
-            y = int((sh - h) / 2) + int(y_offset)
-            if y < 0:
-                  y = 0
-            win.geometry(f"{w}x{h}+{x}+{y}")
-      except Exception:
-            pass
-def show_splash(parent_root, title_text="Loading data…", subtitle_text="Please wait a moment"):
-      splash = tk.Toplevel(parent_root)
-      splash.overrideredirect(True)
-      splash.attributes("-topmost", True)
-      splash.configure(bg="#222222")
-
-      container = tk.Frame(splash, bg="#2b2b2b", bd=0, highlightthickness=0)
-      container.pack(fill="both", expand=True, padx=2, pady=2)
-
-      panel = tk.Frame(container, bg="#2f2f2f")
-      panel.pack(fill="both", expand=True, padx=18, pady=18)
-
-      # --- OPSİYONEL LOGO ---
-      logo_loaded = False
-      logo_label = None
-      try:
-            logo_path = external_resource_path("assets", "starting_screen.png")
-            if os.path.exists(logo_path):
-                  logo_img = tk.PhotoImage(file=logo_path)
-                  logo_label = tk.Label(panel, image=logo_img, bg="#2f2f2f", bd=0, highlightthickness=0)
-                  logo_label.image = logo_img
-                  logo_label.pack(anchor="center", pady=(4, 12))
-                  logo_loaded = True
-      except Exception:
-            logo_loaded = False
-
-      lbl_title = tk.Label(panel, text=title_text, fg="#FFFFFF", bg="#2f2f2f", font=("Segoe UI", 14, "bold"))
-      lbl_title.pack(anchor="center", pady=(4, 6))
-      lbl_sub = tk.Label(panel, text=subtitle_text, fg="#CCCCCC", bg="#2f2f2f", font=("Segoe UI", 10))
-      lbl_sub.pack(anchor="center", pady=(0, 16))
-
-      pbar = ttk.Progressbar(panel, mode="determinate", length=320, maximum=100)
-      pbar.pack(anchor="center", pady=(6, 4))
-      pbar["value"] = 0
-
-      lbl_note = tk.Label(panel, text="Preparing the canvas & analytics…", fg="#AAAAAA", bg="#2f2f2f", font=("Segoe UI", 9))
-      lbl_note.pack(anchor="center", pady=(6, 6))
-
-      # küçük bir alt spacer ile toplam yüksekliği biraz daha artır
-      tk.Frame(panel, height=EXTRA_SPLASH_HEIGHT//2, bg="#2f2f2f").pack(fill="x")
-
-      splash.update_idletasks()
-      req_w = splash.winfo_reqwidth()
-      req_h = splash.winfo_reqheight() + EXTRA_SPLASH_HEIGHT   # hafif uzat
-      if logo_loaded and logo_label is not None and hasattr(logo_label, "image"):
-            try:
-                  img_w = logo_label.image.width()
-                  req_w = max(req_w, img_w + 36)
-            except Exception:
-                  pass
-
-      center_on_screen(splash, req_w, req_h, y_offset=SPLASH_Y_OFFSET)
-      try:
-            splash.grab_set()
-      except Exception:
-            pass
-      splash.update_idletasks()
-      splash.update()
-      return splash, pbar, lbl_title, lbl_sub
-
-def splash_set(splash, pbar, lbl_title, lbl_sub, pct=None, title=None, sub=None):
-      try:
-            if title is not None:
-                  lbl_title.config(text=title)
-            if sub is not None:
-                  lbl_sub.config(text=sub)
-            if pct is not None:
-                  pbar["value"] = max(0, min(100, pct))
-            splash.update_idletasks()
-            splash.update()
-      except Exception:
-            pass
+    risk_val = (str(risk_val or "")).strip().upper()
+    if risk_val == "NO RISK":        return settings_state.get("risk_show_no", True)
+    if risk_val == "LOW RISK":       return settings_state.get("risk_show_low", True)
+    if risk_val == "MEDIUM RISK":    return settings_state.get("risk_show_med", True)
+    if risk_val == "HIGH RISK":      return settings_state.get("risk_show_high", True)
+    if risk_val == "BOOKED CHURN":   return settings_state.get("risk_show_booked", True)
+    return True
 
 # ========================== Ana Uygulama (Lazy Import ile) ==========================
 # 1) Uygulama başında DPI awareness (OS bitmap scaling kapansın)
-_enable_per_monitor_dpi_awareness()
+enable_per_monitor_dpi_awareness()
 
 # Önce ana root'u yarat, gizle ve splash aç
 root = tk.Tk()
@@ -394,13 +232,12 @@ splash_set(splash, pbar, splash_title_lbl, splash_sub_lbl, pct=38, sub="Initiali
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.legend as mlegend
-# --- DATA SCIENCE IMPORTLARI ---
+
 try:
-      from sklearn.cluster import KMeans
-      from sklearn.preprocessing import StandardScaler
-      _HAS_SKLEARN = True
+    import sklearn
+    _HAS_SKLEARN = True
 except ImportError:
-      _HAS_SKLEARN = False
+    _HAS_SKLEARN = False
 
 from mpl_toolkits.axes_grid1 import make_axes_locatable # Marjinal grafikler için
 
@@ -520,26 +357,6 @@ except Exception:
 # Churn ana şalteri: varsayılan True (aktif)
 # Not: Tk BooleanVar henüz burada oluşturulmadı; settings_state kaynak alırız.
 # =========================================================================================================
-
-def center_over_parent(win, parent, w=560, h=420):
-      try:
-            parent.update_idletasks()
-            win.update_idletasks()
-            px = parent.winfo_rootx(); py = parent.winfo_rooty()
-            pw = parent.winfo_width();   ph = parent.winfo_height()
-            if pw <= 1 or ph <= 1:
-                  mx = parent.winfo_pointerx(); my = parent.winfo_pointery()
-                  x = int(mx - w // 2); y = int(my - h // 2)
-            else:
-                  x = int(px + (pw - w) / 2); y = int(py + (ph - h) / 2)
-            win.geometry(f"{w}x{h}+{x}+{y}")
-      except Exception:
-            try:
-                  sw = parent.winfo_screenwidth(); sh = parent.winfo_screenheight()
-                  x = int((sw - w) / 2); y = int((sh - h) / 2)
-                  win.geometry(f"{w}x{h}+{x}+{y}")
-            except Exception:
-                  pass
 
 settings_win = None
 def open_settings(event=None):
@@ -1088,93 +905,6 @@ def open_settings(event=None):
             settings_win.after_idle(lambda: focus_sentinel.focus_set())
 
       nb.bind("<<NotebookTabChanged>>", _on_tab_changed, add=True)
-
-def create_collapsible_stat_card(parent, title_bg="#f0f0f0"):
-      """
-      Başlıklar (Count/MRR) sabit, alt liste (Sektörler) açılır/kapanır bir kart oluşturur.
-      Geriye (container, lbl_count, lbl_mrr, lbl_list_adapter, btn_toggle) döndürür.
-      YENİLİK: Scrollbar eklendi ve yükseklik 5 satır ile sınırlandı.
-      """
-      # 1. Ana Kart Çerçevesi
-      card_frame = tk.Frame(parent, bg="white", bd=1, relief="solid")
-      
-      # 2. Üst Başlık Alanı
-      header_frame = tk.Frame(card_frame, bg=title_bg, padx=5, pady=5)
-      header_frame.pack(fill="x")
-      
-      # İstatistik Label'ları
-      lbl_count = tk.Label(header_frame, text="0", font=("Arial", 12, "bold"), bg=title_bg, anchor="w")
-      lbl_count.pack(fill="x")
-      
-      lbl_mrr = tk.Label(header_frame, text="$0", font=("Arial", 10, "bold"), fg="black", bg=title_bg, anchor="w")
-      lbl_mrr.pack(fill="x")
-      
-      # Aç/Kapa Butonu
-      btn_toggle = tk.Label(header_frame, text="▼ Show Breakdown", font=("Segoe UI", 8),  
-                            fg="blue", cursor="hand2", bg=title_bg, anchor="w")
-      btn_toggle.pack(fill="x", pady=(4, 0))
-      
-      # 3. İçerik Alanı (Scrollbar ve Text barındıracak)
-      content_frame = tk.Frame(card_frame, bg="white", padx=5, pady=5)
-      
-      # --- SCROLLBAR VE TEXT WIDGET ---
-      # Scrollbar sağa yaslanacak
-      scrollbar = ttk.Scrollbar(content_frame, orient="vertical")
-      scrollbar.pack(side="right", fill="y")
-      
-      # Text widget (Label yerine bunu kullanıyoruz)
-      # height=5 -> Sadece 5 satır göster
-      txt_list = tk.Text(content_frame, height=5, width=30, 
-                         font=("Arial", 9), bg="white", bd=0, 
-                         yscrollcommand=scrollbar.set, cursor="arrow")
-      txt_list.pack(side="left", fill="both", expand=True)
-      
-      # Scrollbar'ı Text'e bağla
-      scrollbar.config(command=txt_list.yview)
-      
-      # Başlangıçta sadece okunabilir olsun (State disabled)
-      txt_list.configure(state="disabled")
-
-      # --- ADAPTASYON (ÖNEMLİ) ---
-      # Mevcut kodunuzda update_plot fonksiyonu 'label.config(text=...)' kullanıyor.
-      # Text widget'ı normalde 'text' parametresi almaz. 
-      # Bu yüzden Text widget'ına sahte bir config metodu ekliyoruz.
-      
-      # Orijinal configure metodunu saklayalım
-      _orig_config = txt_list.config
-
-      def custom_config(text=None, **kwargs):
-            # Eğer 'text' parametresi gelirse içeriği güncelle
-            if text is not None:
-                  txt_list.configure(state="normal") # Yazmak için kilidi aç
-                  txt_list.delete("1.0", "end")      # Eskiyi sil
-                  txt_list.insert("1.0", text)       # Yeniyi yaz
-                  txt_list.configure(state="disabled") # Tekrar kilitle (Read-only)
-            
-            # Diğer parametreleri (örn: bg, fg) orijinal metoda pasla
-            if kwargs:
-                  _orig_config(**kwargs)
-
-      # Metodu override et (Python'un dinamikliği sağ olsun)
-      txt_list.config = custom_config
-      txt_list.configure = custom_config 
-      
-      # --- Toggle Mantığı ---
-      is_expanded = [False] 
-      
-      def toggle(event=None):
-            if is_expanded[0]:
-                  content_frame.pack_forget()
-                  btn_toggle.config(text="▼ Show Breakdown")
-                  is_expanded[0] = False
-            else:
-                  content_frame.pack(fill="both", expand=True)
-                  btn_toggle.config(text="▲ Hide Breakdown")
-                  is_expanded[0] = True
-                  
-      btn_toggle.bind("<Button-1>", toggle)
-      
-      return card_frame, lbl_count, lbl_mrr, txt_list
 
 # Settings butonu
 settings_btn = ttk.Button(root, text="⚙️ Settings", style="Settings.TButton", command=open_settings)
@@ -2737,48 +2467,6 @@ def compute_fit_limits(selected_sector, x_col, visible_df, pad_ratio=PAD_RATIO, 
 # =====================================================
 # Çizim / etkileşim
 # =====================================================
-# ==================== ANALYTICS HELPERS ====================
-def calculate_kmeans_labels(df_in, k=3):
-      """Verilen DataFrame için K-Means kümeleme yapar ve etiketleri (0,1,2..) döndürür."""
-      if not _HAS_SKLEARN or len(df_in) < k:
-            return None
-       
-      try:
-            # Sadece sayısal verileri al
-            X = df_in[[get_plot_x_col(), 'MRR Growth (%)']].copy().fillna(0)
-            # Ölçekleme (Normalization) - MRR 1000, Growth 10 olunca MRR baskın çıkmasın diye şart
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-             
-            kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-            labels = kmeans.fit_predict(X_scaled)
-            return labels # [0, 1, 0, 2, ...]
-      except Exception as e:
-            print(f"KMeans Error: {e}")
-            return None
-
-def calculate_pareto_mask(df_in):
-      """MRR'ın %80'ini oluşturan müşterileri (True/False) işaretler."""
-      try:
-            x_col = get_plot_x_col()
-            # Büyükten küçüğe sırala
-            df_sorted = df_in.sort_values(by=x_col, ascending=False)
-            total_revenue = df_sorted[x_col].sum()
-             
-            # Kümülatif toplam
-            cumsum = df_sorted[x_col].cumsum()
-             
-            # %80 sınırını belirle
-            cutoff = total_revenue * 0.80
-             
-            # Maskeyi oluştur (Sıralı df üzerinde)
-            pareto_mask_sorted = cumsum <= cutoff
-             
-            # Maskeyi orijinal index'e göre geri döndür
-            return pareto_mask_sorted.reindex(df_in.index, fill_value=False)
-      except Exception:
-            return None
-# ===========================================================
 
 def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
       global last_annotation, center_x, center_y
@@ -2901,54 +2589,25 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
        
       # B) YOKSA VE REGRESYON AÇIKSA: NORMAL HESAPLAMA YAP
       elif settings_state.get("show_regression_line", False) and selected_sector != "Sector Avg":
-            # ... (Buradaki mevcut np.polyfit hesaplama kodları AYNEN KALACAK) ...
-            # ...
-            # Sadece başındaki 'if' koşulunu 'elif' yaptık.
-             
+            
+            # Geçici bir kopya al
             temp_df_for_line = visible_df_base.copy()
             if selected_sector != "All":
-                  temp_df_for_line = temp_df_for_line[temp_df_for_line['Company Sector'] == selected_sector]
-             
-            # Risk filtresi (varsa) regresyon hesaplamasını etkiler
+                temp_df_for_line = temp_df_for_line[temp_df_for_line['Company Sector'] == selected_sector]
+            
+            # Risk filtresi varsa uygula
             if is_risk_view_active(selected_sector) and (RISK_COL in temp_df_for_line.columns):
-                  def _risk_allowed_reg(risk_val: str) -> bool:
-                        risk_val = (str(risk_val or "")).strip().upper()
-                        if risk_val == "NO RISK":        return settings_state.get("risk_show_no", True)
-                        if risk_val == "LOW RISK":      return settings_state.get("risk_show_low", True)
-                        if risk_val == "MEDIUM RISK": return settings_state.get("risk_show_med", True)
-                        if risk_val == "HIGH RISK":     return settings_state.get("risk_show_high", True)
-                        return True
-                  temp_df_for_line = temp_df_for_line[temp_df_for_line[RISK_COL].astype(str).str.upper().apply(_risk_allowed_reg)]
-
-            if len(temp_df_for_line) >= 2: # Regresyon için en az 2 nokta
-                  try:
-                        # Eksenlerin ters çevrilip çevrilmediğine göre x ve y'yi ayarla
-                        if settings_state.get("swap_axes", False):
-                              # Y = MRR, X = Growth
-                              x_data = temp_df_for_line['MRR Growth (%)'].astype(float).values
-                              y_data = temp_df_for_line[x_col].astype(float).values
-                        else:
-                              # Y = Growth, X = MRR
-                              x_data = temp_df_for_line[x_col].astype(float).values
-                              y_data = temp_df_for_line['MRR Growth (%)'].astype(float).values
-                         
-                        # NaN/Inf değerleri temizle
-                        valid_mask = ~np.isnan(x_data) & ~np.isnan(y_data) & ~np.isinf(x_data) & ~np.isinf(y_data)
-                        x_data_clean = x_data[valid_mask]
-                        y_data_clean = y_data[valid_mask]
-
-                        if len(x_data_clean) >= 2:
-                              # numpy.polyfit(x, y, 1) -> [m (eğim), b (kesişim)]
-                              m, b = np.polyfit(x_data_clean, y_data_clean, 1)
-                              current_regression_line['m'] = m
-                              current_regression_line['b'] = b
-                        else:
-                              current_regression_line['m'] = None
-                              current_regression_line['b'] = None
-                  except Exception as e:
-                        print(f"Regresyon hesaplama hatası: {e}")
-                        current_regression_line['m'] = None
-                        current_regression_line['b'] = None
+                 temp_df_for_line = temp_df_for_line[temp_df_for_line[RISK_COL].astype(str).str.upper().apply(_risk_allowed)]
+    
+            # --- YENİ: Hesabı 'analysis.py' içindeki fonksiyona yaptır ---
+            res = calculate_regression_line(
+                temp_df_for_line, 
+                x_col, 
+                swap_axes=settings_state.get("swap_axes", False)
+            )
+            current_regression_line['m'] = res['m']
+            current_regression_line['b'] = res['b']
+            # ------------------------------------------------------------
 
       # ===================== /REGRESYON HESAPLAMA =====================
 
@@ -3173,9 +2832,9 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                               ana_mask = None
                                
                               if analytics_state["mode"] == "kmeans":
-                                    ana_labels = calculate_kmeans_labels(visible_df_base, k=analytics_state["kmeans_k"])
+                                    ana_labels = calculate_kmeans_labels(visible_df_base, x_col, k=analytics_state["kmeans_k"])
                               elif analytics_state["mode"] == "pareto":
-                                    ana_mask = calculate_pareto_mask(visible_df_base)
+                                    ana_mask = calculate_pareto_mask(visible_df_base, x_col)
 
                               px_list, py_list, colors_list = [], [], []
                                
