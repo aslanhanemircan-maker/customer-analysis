@@ -12,7 +12,7 @@ except Exception:
       DateEntry = None
       _HAS_TKCALENDAR = False   # Yüklü değilse fallback olarak Entry kullanılacak
       
-from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL      
+from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL, get_point_key
 from analysis import calculate_kmeans_labels, calculate_pareto_mask, calculate_regression_line
 from utils import (
     external_resource_path, 
@@ -922,49 +922,6 @@ def _load_excel_icon():
 
 _load_excel_icon()
 
-def _point_key(row):
-      """
-      Nokta kimliği: (Index, Effective MRR, MRR Growth (%))
-      Index ekleyerek 'hatalı veri' (0,0) çakışmalarını önlüyoruz.
-      """
-      # 1. Aktif Age Modunu Al
-      age_mode = settings_state.get("age_filter_mode", "0-Current")
-       
-      # 2. Hedef Kolonları Belirle
-      target_x = None
-      target_y = None
-       
-      if age_mode == "0-1":
-            target_x = "First Year Ending MRR"
-            target_y = "MRR Growth (0-1)"
-      elif age_mode == "0-2":
-            target_x = "Second Year Ending MRR"
-            target_y = "MRR Growth (0-2)"
-      elif age_mode == "1-2":
-            target_x = "Second Year Ending MRR"
-            target_y = "MRR Growth(1-2)"  
-             
-      try:
-            # --- SENARYO A: Age Modu Aktif ---
-            if target_x and target_y and target_x in row and target_y in row:
-                  x_val = float(row[target_x])
-                  y_val = float(row[target_y]) * 100.0
-                  # DÜZELTME: row.name (Excel satır no) ekliyoruz
-                  return (row.name, x_val, y_val)
-
-            # --- SENARYO B: Varsayılan (0-Current) ---
-            x = float(row.get(EFFECTIVE_MRR_COL, row.get(BASE_MRR_FALLBACK_COL)))
-            y = float(row['MRR Growth (%)'])
-             
-            # DÜZELTME: row.name (Excel satır no) ekliyoruz
-            return (row.name, x, y)
-             
-      except Exception:
-            # Veri bozuksa bile (Excel hatası vb.) row.name sayesinde  
-            # bu satırın kimliği diğer bozuk satırlarla karışmaz.
-            return (row.name, 0.0, 0.0)
-
-
 def _gather_current_view_dataframe(only_selected=False):
       """
       Mevcut grafikte görünen veriyi DataFrame olarak hazırlar.
@@ -974,7 +931,7 @@ def _gather_current_view_dataframe(only_selected=False):
        
       # 1. Gizli noktaları filtrele
       hidden = set().union(manual_removed, license_removed, limit_removed_set())
-      base_df = df[~df.apply(lambda r: _point_key(r) in hidden, axis=1)].copy()
+      base_df = df[~df.apply(lambda r: get_point_key(r, settings_state) in hidden, axis=1)].copy()
 
       # 2. Temel filtreler (Churn, Age)
       base_df = _apply_churn_filters(base_df)
@@ -1004,7 +961,7 @@ def _gather_current_view_dataframe(only_selected=False):
       # [YENİ] SEÇİM FİLTRESİ (NORMAL MÜŞTERİLER İÇİN ÖN HAZIRLIK)
       # ---------------------------------------------------------
       if only_selected and sector_combobox.get() != "Sector Avg":
-            # Normal modda seçimler _point_key (tuple) olarak tutulur.
+            # Normal modda seçimler get_point_key(row, settings_state) (tuple) olarak tutulur.
             # Sadece bu key'e sahip satırları tut.
             target_keys = selection_state.get("selected_keys", set())
             if not target_keys:
@@ -1012,7 +969,7 @@ def _gather_current_view_dataframe(only_selected=False):
                   return pd.DataFrame()
              
             # Apply ile kontrol (biraz yavaş olabilir ama güvenlidir)
-            base_df = base_df[base_df.apply(lambda r: _point_key(r) in target_keys, axis=1)]
+            base_df = base_df[base_df.apply(lambda r: get_point_key(r, settings_state)(r) in target_keys, axis=1)]
 
       selected_sector = sector_combobox.get()
 
@@ -1460,7 +1417,7 @@ def _visible_customer_names_starting_with(prefix_cf: str):
       hidden = set().union(manual_removed, license_removed, limit_removed_set())
        
       # visible_df oluştur (filtrelenmiş veri)
-      vis_df = df[~df.apply(lambda r: _point_key(r) in hidden, axis=1)].copy()
+      vis_df = df[~df.apply(lambda r: get_point_key(r, settings_state)(r) in hidden, axis=1)].copy()
 
       vis_df = _apply_churn_filters(vis_df)
       vis_df = _apply_age_filters(vis_df)
@@ -2226,7 +2183,7 @@ def limit_removed_set():
        
       s = set()
       for _, row in df.iterrows():
-            key = _point_key(row)
+            key = get_point_key(row, settings_state)
              
             # DÜZELTME: Artık key 3 elemanlı (idx, x, y)
             idx, x, y = key  
@@ -2388,7 +2345,7 @@ def _apply_regression_filter(df_in: pd.DataFrame, x_col: str) -> pd.DataFrame:
       if mask is not True:
             removed_df = df_in[~mask]
             for _, row in removed_df.iterrows():
-                  regression_removed.add(_point_key(row))
+                  regression_removed.add(get_point_key(row, settings_state))
     
       return df_in[mask]
 def get_plot_x_col():
@@ -2523,16 +2480,16 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                               lbl_to_check = f"{sec_name} Avg".casefold()
                                
                               if not lbl_to_check.startswith(term):
-                                    hidden.add(_point_key(row))
+                                    hidden.add(get_point_key(row, settings_state))
                         else:
                               # Normal Müşteri Modu: Müşteri adına bak
                               c_name = str(row.get('Customer', '')).strip().casefold()
                               if not c_name.startswith(term):
-                                    hidden.add(_point_key(row))
+                                    hidden.add(get_point_key(row, settings_state))
       # =============================================================================
 
       visible_df_base = df[~df.apply(
-            lambda r: _point_key(r) in hidden, axis=1
+            lambda r: get_point_key(r, settings_state) in hidden, axis=1
       )].copy()
       stats_df = visible_df_base.copy()
        
@@ -3600,7 +3557,7 @@ def on_right_click(event):
                         try:
                               sec_df = df[df['Company Sector'] == sector_name]
                               for _, row in sec_df.iterrows():
-                                    key = _point_key(row)
+                                    key = get_point_key(row, settings_state)
                                     if key not in manual_removed:
                                           manual_removed.add(key)
                                           keys_for_sector.append(key)
@@ -3631,7 +3588,7 @@ def on_right_click(event):
                   else:
                         idx = ind["ind"][0]
                         row = sector_data.iloc[idx]
-                        key = _point_key(row)
+                        key = get_point_key(row, settings_state)
 
                   if key not in manual_removed:
                         manual_removed.add(key)
@@ -3953,7 +3910,7 @@ def on_license_filter():
                         # Herhangi bir parse hatasında satırı atla
                         continue
 
-                  key = _point_key(row)
+                  key = get_point_key(row, settings_state)
 
                   if not rev:
                         if license_value > min_license:
@@ -5016,7 +4973,7 @@ def on_select_release(event):
                         else:
                               idx = ind["ind"][0]  
                               row = sub_df.iloc[idx]
-                              key = _point_key(row)
+                              key = get_point_key(row, settings_state)
                          
                         if key in selection_state["selected_keys"]:
                               selection_state["selected_keys"].remove(key)
@@ -5046,7 +5003,7 @@ def on_select_release(event):
                               val_y = float(row['MRR Growth (%)'])
                                
                               px, py = to_plot_coords(val_x, val_y)
-                              key = _point_key(row)
+                              key = get_point_key(row, settings_state)
                                
                               if (x_min <= px <= x_max) and (y_min <= py <= y_max):
                                     selection_state["selected_keys"].add(key)
@@ -5080,7 +5037,7 @@ def on_delete_selected(event):
                         # O sektördeki tüm müşterileri bul
                         sec_df = df[df['Company Sector'] == sec_name]
                         for _, row in sec_df.iterrows():
-                              pt_key = _point_key(row)
+                              pt_key = get_point_key(row, settings_state)
                               if pt_key not in manual_removed:
                                     keys_to_add_to_manual.append(pt_key)
                                     manual_removed.add(pt_key)
@@ -5131,7 +5088,7 @@ def invert_selection(event=None):
             # Müşteri anahtarlarını topla
             for sc, sub_df in scatter_points:
                   for _, row in sub_df.iterrows():
-                        key = _point_key(row)
+                        key = get_point_key(row, settings_state)
                         all_visible_keys.add(key)
 
       current_selection = selection_state["selected_keys"]

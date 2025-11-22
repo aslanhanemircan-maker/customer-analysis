@@ -49,3 +49,37 @@ def load_and_clean_data(file_path):
         df.loc[churn_mask, EFFECTIVE_MRR_COL] = df.loc[churn_mask, CHURNED_MRR_COL].astype(float)
 
     return df
+
+def get_point_key(row, settings_state):
+    """
+    Nokta kimliği: (Index, Effective MRR, MRR Growth (%))
+    """
+    age_mode = settings_state.get("age_filter_mode", "0-Current")
+    
+    target_x = None
+    target_y = None
+    
+    if age_mode == "0-1":
+        target_x = "First Year Ending MRR"
+        target_y = "MRR Growth (0-1)"
+    elif age_mode == "0-2":
+        target_x = "Second Year Ending MRR"
+        target_y = "MRR Growth (0-2)"
+    elif age_mode == "1-2":
+        target_x = "Second Year Ending MRR"
+        target_y = "MRR Growth(1-2)"  
+        
+    try:
+        if target_x and target_y and target_x in row and target_y in row:
+            x_val = float(row[target_x])
+            y_val = float(row[target_y]) * 100.0
+            return (row.name, x_val, y_val)
+
+        # Varsayılan (0-Current)
+        # data_ops içinde EFFECTIVE_MRR_COL gibi sabitler zaten tanımlı olmalı
+        x = float(row.get(EFFECTIVE_MRR_COL, row.get(BASE_MRR_FALLBACK_COL)))
+        y = float(row['MRR Growth (%)'])
+        return (row.name, x, y)
+        
+    except Exception:
+        return (row.name, 0.0, 0.0)
