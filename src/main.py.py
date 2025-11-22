@@ -12,7 +12,7 @@ except Exception:
       DateEntry = None
       _HAS_TKCALENDAR = False   # Yüklü değilse fallback olarak Entry kullanılacak
       
-from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL, get_point_key
+from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL, get_point_key, get_limit_removed_keys
 from analysis import calculate_kmeans_labels, calculate_pareto_mask, calculate_regression_line
 from utils import (
     external_resource_path, 
@@ -20,7 +20,10 @@ from utils import (
     force_baseline_scaling, 
     show_splash, 
     splash_set,
-    center_on_screen
+    center_on_screen,
+    parse_number_entry,
+    parse_optional_number,
+    validate_float
 )
 
 from ui_components import (
@@ -930,7 +933,7 @@ def _gather_current_view_dataframe(only_selected=False):
       x_col = get_plot_x_col()
        
       # 1. Gizli noktaları filtrele
-      hidden = set().union(manual_removed, license_removed, limit_removed_set())
+      hidden = set().union(manual_removed, license_removed, get_limit_removed_keys(df, settings_state))
       base_df = df[~df.apply(lambda r: get_point_key(r, settings_state) in hidden, axis=1)].copy()
 
       # 2. Temel filtreler (Churn, Age)
@@ -1414,7 +1417,7 @@ def _visible_customer_names_starting_with(prefix_cf: str):
             return [c for c in candidates if tr_lower(c).startswith(prefix_cf)]
 
       # --- SENARYO 2: MÜŞTERİ ARAMA MODU (ESKİ MANTIK) ---
-      hidden = set().union(manual_removed, license_removed, limit_removed_set())
+      hidden = set().union(manual_removed, license_removed, get_limit_removed_keys(df, settings_state))
        
       # visible_df oluştur (filtrelenmiş veri)
       vis_df = df[~df.apply(lambda r: get_point_key(r, settings_state)(r) in hidden, axis=1)].copy()
@@ -2135,69 +2138,6 @@ def remove_existing_legends():
                         pass
       active_legends.clear()
 
-
-def validate_float(P: str) -> bool:
-      return (P == "") or all(ch.isdigit() or ch in "., -+" for ch in P)
-
-
-def parse_number_entry(val: str) -> float:
-      s = str(val or "").strip().replace(" ", "")
-      if not s:
-            return 0.0
-      neg = False
-      if s.startswith(("+", "-")):
-            neg = s[0] == "-"
-            s = s[1:]
-      if "," in s and "." in s:
-            s = s.replace(".", "").replace(",", ".")
-      elif "," in s:
-            s = s.replace(",", ".")
-      else:
-            parts = s.split(".")
-            if len(parts) > 1 and all(len(p) == 3 for p in parts[1:]) and 1 <= len(parts[0]) <= 3:
-                  s = "".join(parts)
-      try:
-            val = float(s)
-            return -val if neg else val
-      except Exception:
-            return 0.0
-
-
-def parse_optional_number(val: str):
-      if val is None:
-            return None
-      s = str(val).strip()
-      if s == "":
-            return None
-      return parse_number_entry(s)
-
-
-def limit_removed_set():
-      if settings_state["mode"] != "limit":
-            return set()
-       
-      mrr_min = settings_state.get("mrr_min", None)
-      mrr_max = settings_state.get("mrr_max", None)
-      gy_min = settings_state.get("growth_min", None)
-      gy_max = settings_state.get("growth_max", None)
-       
-      s = set()
-      for _, row in df.iterrows():
-            key = get_point_key(row, settings_state)
-             
-            # DÜZELTME: Artık key 3 elemanlı (idx, x, y)
-            idx, x, y = key  
-             
-            out = False
-            if mrr_min is not None and x < mrr_min: out = True
-            if mrr_max is not None and x > mrr_max: out = True
-            if gy_min is not None and y < gy_min:     out = True
-            if gy_max is not None and y > gy_max:     out = True
-             
-            if out:
-                  s.add(key)
-      return s
-
 # --- Age filter modları ---
 AGE_MODE_0_CURRENT = "0-Current"
 AGE_MODE_0_1         = "0-1"
@@ -2462,7 +2402,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
       scatter_points.clear()
       _clear_highlight_overlays()   # yeni çizimde eski highlight overlaylerini temizle
 
-      hidden = set().union(manual_removed, license_removed, limit_removed_set())
+      hidden = set().union(manual_removed, license_removed, get_limit_removed_keys(df, settings_state))
 
       # ================= YENİ: HOLD-TO-FOCUS MANTIĞI (GÜNCELLENDİ) =================
       # Eğer butona BASILI TUTULUYORSA (is_focus_held == True)

@@ -173,3 +173,55 @@ def splash_set(splash, pbar, lbl_title, lbl_sub, pct=None, title=None, sub=None)
         splash.update()
     except Exception:
         pass
+
+def parse_number_entry(val: str) -> float:
+    """
+    Kullanıcı girişini (örn: '1.000,50' veya '1000.5') float'a çevirir.
+    """
+    s = str(val or "").strip().replace(" ", "")
+    if not s:
+        return 0.0
+    
+    neg = False
+    if s.startswith(("+", "-")):
+        neg = s[0] == "-"
+        s = s[1:]
+    
+    # Hem nokta hem virgül varsa (örn: 1.000,50 -> 1000.50 yap)
+    if "," in s and "." in s:
+        s = s.replace(".", "").replace(",", ".")
+    elif "," in s:
+        s = s.replace(",", ".")
+    else:
+        # Sadece nokta varsa ve birden fazla nokta veya garip durum yoksa
+        parts = s.split(".")
+        # Eğer 1.000 gibi binlik ayracı ise (son parça 3 haneli değilse ondalıktır)
+        if len(parts) > 1 and all(len(p) == 3 for p in parts[1:]) and 1 <= len(parts[0]) <= 3:
+            s = "".join(parts)
+            
+    try:
+        val = float(s)
+        return -val if neg else val
+    except Exception:
+        return 0.0
+
+def parse_optional_number(val: str):
+    """
+    Boş string gelirse None, yoksa float döndürür.
+    """
+    if val is None:
+        return None
+    s = str(val).strip()
+    if s == "":
+        return None
+    return parse_number_entry(s)    
+
+def validate_float(P: str) -> bool:
+    """
+    Tkinter Entry widget'ı için doğrulama fonksiyonu.
+    Sadece rakam, nokta, virgül, eksi ve artıya izin verir.
+    """
+    if P == "":
+        return True
+    # İzin verilen karakterler: Rakamlar ve ., -+
+    return all(ch.isdigit() or ch in "., -+" for ch in P)

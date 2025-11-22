@@ -83,3 +83,37 @@ def get_point_key(row, settings_state):
         
     except Exception:
         return (row.name, 0.0, 0.0)
+    
+def get_limit_removed_keys(df, settings_state):
+    """
+    Limit modunda (Min/Max filtreleri) gizlenmesi gereken noktaların
+    key'lerini (set olarak) döndürür.
+    """
+    if settings_state.get("mode") != "limit":
+        return set()
+    
+    mrr_min = settings_state.get("mrr_min", None)
+    mrr_max = settings_state.get("mrr_max", None)
+    gy_min = settings_state.get("growth_min", None)
+    gy_max = settings_state.get("growth_max", None)
+    
+    s = set()
+    for _, row in df.iterrows():
+        # get_point_key bu dosyanın içinde olduğu için direkt çağırabiliriz
+        key = get_point_key(row, settings_state)
+        
+        # key yapısı: (index, x_val, y_val)
+        # Eğer tuple 3 elemanlıysa parçala, değilse (nadiren) atla
+        if isinstance(key, tuple) and len(key) == 3:
+            idx, x, y = key
+            
+            out = False
+            if mrr_min is not None and x < mrr_min: out = True
+            if mrr_max is not None and x > mrr_max: out = True
+            if gy_min is not None and y < gy_min:   out = True
+            if gy_max is not None and y > gy_max:   out = True
+            
+            if out:
+                s.add(key)
+                
+    return s    
