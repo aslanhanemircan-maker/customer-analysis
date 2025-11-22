@@ -11,6 +11,10 @@ try:
 except Exception:
       DateEntry = None
       _HAS_TKCALENDAR = False   # Yüklü değilse fallback olarak Entry kullanılacak
+from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL      
+
+CHURN_X_COLOR = 'red' 
+CHURN_DATE_COL = 'Churn Date'
        
 # ========================== Handbook Image Loader ==========================
 HANDBOOK_IMAGES = {} # Önbellek
@@ -75,14 +79,6 @@ def preload_handbook_images():
             # Genişlik (width) handbook içindekiyle aynı olmalı (850)
             # Böylece cache tam eşleşir.
             load_handbook_image(f, width=850)
-
-def tr_lower(text):
-      """Türkçe karakter uyumlu küçük harfe çevirme."""
-      if not text:
-            return ""
-      # Önce sorunlu karakterleri manuel değiştir, sonra lower yap
-      text = text.replace("İ", "i").replace("I", "ı")
-      return text.lower()
 
 # --- GLOBAL TOOLTIP YÖNETİCİSİ ---
 _tt_win = None
@@ -379,49 +375,19 @@ else:
 
 # === LAZY IMPORT: Ağır kütüphaneleri splash göründükten ve dosya yolu belli olduktan sonra yükle ===
 splash_set(splash, pbar, splash_title_lbl, splash_sub_lbl, pct=14, sub="Loading libraries…")
-import pandas as pd   # heavy
-import numpy as np   # REGRESYON İÇİN EKLENDİ
+import pandas as pd
+import numpy as np 
 
-splash_set(splash, pbar, splash_title_lbl, splash_sub_lbl, pct=16, sub="Reading workbook…")
-# Excel'i oku
-df = pd.read_excel(file_path)
+splash_set(splash, pbar, splash_title_lbl, splash_sub_lbl, pct=16, sub="Reading workbook & Processing…")
 
-# ===================== GROWTH KOLONU KAYNAĞI GÜNCELLEME =====================
-# Artık büyüme değerini "MRR Growth (0-today)" sütunundan alıyoruz.
-# Eğer bu sütun yoksa, eski davranışa (MRR Growth) geri düşer.
-if 'MRR Growth (0-today)' in df.columns:
-      df['MRR Growth (%)'] = df['MRR Growth (0-today)'] * 100
-else:
-      df['MRR Growth (%)'] = df['MRR Growth'] * 100
-# ============================================================================
-
-# ====================== NEW/CHURN: Kolon isim sabitleri ======================
-CHURN_COL = 'Churn'
-CHURNED_MRR_COL = 'Churned MRR'
-CHURN_X_COLOR = 'red'
-CHURN_DATE_COL = 'Churn Date'
-# ============================================================================
-
-# ====================== MRR KAYNAĞI (Current / Churned) ======================
-# MRR değerlerini artık "First Year Ending MRR" yerine:
-# - normal müşteri için: "Current MRR"
-# - churn müşteri için: "Churned MRR"
-EFFECTIVE_MRR_COL = 'Effective MRR'
-CURRENT_MRR_COL = 'Current MRR'
-BASE_MRR_FALLBACK_COL = 'First Year Ending MRR'
-
-# Önce baz MRR'i seç (Current varsa onu, yoksa eski First Year)
-if CURRENT_MRR_COL in df.columns:
-      base_mrr_series = df[CURRENT_MRR_COL]
-else:
-      base_mrr_series = df[BASE_MRR_FALLBACK_COL]
-
-df[EFFECTIVE_MRR_COL] = base_mrr_series.astype(float)
-
-# Churn olan satırlarda, MRR'i "Churned MRR" ile değiştir
-if (CHURN_COL in df.columns) and (CHURNED_MRR_COL in df.columns):
-      churn_mask_global = df[CHURN_COL].astype(str).str.upper().eq("CHURN")
-      df.loc[churn_mask_global, EFFECTIVE_MRR_COL] = df.loc[churn_mask_global, CHURNED_MRR_COL].astype(float)
+# Tüm o karmaşık işleri artık tek satırda yapıyoruz:
+try:
+    df = load_and_clean_data(file_path)
+except Exception as e:
+    # Hata olursa ekrana basıp kapatalım
+    import tkinter.messagebox
+    tkinter.messagebox.showerror("Data Error", str(e))
+    sys.exit()
 # ============================================================================
 # Matplotlib ve alt bileşenleri de ancak şimdi yükleniyor
 splash_set(splash, pbar, splash_title_lbl, splash_sub_lbl, pct=38, sub="Initializing plotting engine…")
