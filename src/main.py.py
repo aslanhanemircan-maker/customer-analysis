@@ -209,15 +209,19 @@ def force_baseline_scaling(root, baseline_dpi=96):
 
 # ========================== Kaynak yolu yardımcı ==========================
 def external_resource_path(*parts):
-      """
-      Geliştirme (.py) modunda dosyanın bulunduğu klasörü, paketlenmiş exe modunda ise
-      exe'nin bulunduğu klasörü baz alır. Exe veya .py ile AYNI klasördeki 'assets/...' gibi yollar için.
-      """
-      if getattr(sys, "frozen", False):
-            base = os.path.dirname(sys.executable)   # exe ile aynı klasör
-      else:
-            base = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
-      return os.path.join(base, *parts)
+    """
+    GÜNCELLENDİ: Kod 'src' klasöründe olduğu için, kaynakları bulmak adına
+    bir üst klasöre (project root) çıkar.
+    """
+    if getattr(sys, "frozen", False):
+        # Exe olduğunda (bunu şimdilik dert etme)
+        base = os.path.dirname(sys.executable)
+    else:
+        # .py çalışırken: Şu anki dosyanın (main.py) olduğu yerin BİR ÜSTÜNÜ al
+        current_dir = os.path.dirname(os.path.abspath(__file__)) if "__file__" in globals() else os.getcwd()
+        base = os.path.dirname(current_dir) # <-- İşte sihirli dokunuş: Bir üst klasöre çık
+        
+    return os.path.join(base, *parts)
 
 # ========================== Splash Helpers ==========================
 def center_on_screen(win, w, h, y_offset=0):
@@ -353,7 +357,7 @@ splash, pbar, splash_title_lbl, splash_sub_lbl = show_splash(
 splash_set(splash, pbar, splash_title_lbl, splash_sub_lbl, pct=5)
 
 # --- Excel dosyası seçimi / Otomatik açma mantığı ---
-default_xlsx = external_resource_path("data.xlsx")
+default_xlsx = external_resource_path("assets", "data.xlsx")
 file_path = default_xlsx if os.path.exists(default_xlsx) else None
 if file_path:
       splash_set(splash, pbar, splash_title_lbl, splash_sub_lbl, pct=12, sub="Found data.xlsx next to the app")
