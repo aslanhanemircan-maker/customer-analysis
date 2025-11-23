@@ -482,3 +482,24 @@ def prepare_export_dataframe(df, settings_state, hidden_keys, selected_sector, s
     out['Quadrant'] = qs
     
     return out
+
+def get_plot_x_col(df, settings_state, license_mode_string):
+    """
+    X ekseninde kullanılacak kolonu belirler.
+    license_mode_string: 'Exc.' veya 'Inc.' (string olarak gelir)
+    """
+    # Ayarlardan kontrol et: Exc. modu mu ve updated values açık mı?
+    use_updated = (
+        settings_state.get("use_updated_exc_license_values", False)
+        and license_mode_string == "Exc."
+    )
+    
+    updated_col = 'Exc. License MRR'
+    
+    # Eğer şartlar sağlanıyorsa ve kolon df'de varsa onu dön
+    if use_updated and (updated_col in df.columns):
+        return updated_col
+    
+    # Yoksa varsayılan EFFECTIVE_MRR_COL dön
+    # (Not: EFFECTIVE_MRR_COL bu dosyanın yukarısında zaten tanımlıdır)
+    return EFFECTIVE_MRR_COL
