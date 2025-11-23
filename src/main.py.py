@@ -24,7 +24,8 @@ from utils import (
     parse_number_entry,
     parse_optional_number,
     validate_float,
-    maximize_main_window
+    maximize_main_window,
+    to_plot_coords
 )
 
 from ui_components import (
@@ -953,7 +954,7 @@ def _gather_current_view_dataframe(only_selected=False):
                   eff_center_x = 0
                   eff_center_y = 0
        
-      plot_cx, plot_cy = to_plot_coords(eff_center_x, eff_center_y)
+      plot_cx, plot_cy = to_plot_coords(eff_center_x, eff_center_y, settings_state.get("swap_axes", False))
 
       # --- SENARYO A: SECTOR AVG SEÇİLİYSE ---
       if selected_sector == "Sector Avg":
@@ -981,7 +982,7 @@ def _gather_current_view_dataframe(only_selected=False):
                   avg_growth = sec_df['MRR Growth (%)'].astype(float).mean()
                   total_mrr = sec_df[EFFECTIVE_MRR_COL].astype(float).sum()
                    
-                  px, py = to_plot_coords(avg_mrr, avg_growth)
+                  px, py = to_plot_coords(avg_mrr, avg_growth, settings_state.get("swap_axes", False))
                    
                   if px >= plot_cx and py >= plot_cy:     q_str = "(+,+)"
                   elif px < plot_cx and py >= plot_cy:   q_str = "(-,+)"
@@ -1030,7 +1031,7 @@ def _gather_current_view_dataframe(only_selected=False):
       # Quadrant Hesapla
       qs = []
       for xv, yv in zip(out['MRR Value'].values, out['MRR Growth (%)'].values):
-            px, py = to_plot_coords(float(xv), float(yv))
+            px, py = to_plot_coords(float(xv), float(yv), settings_state.get("swap_axes", False))
             if px >= plot_cx and py >= plot_cy:     qs.append("(+,+)")
             elif px < plot_cx and py >= plot_cy:   qs.append("(-,+)")
             elif px < plot_cx and py < plot_cy:     qs.append("(-,-)")
@@ -1068,7 +1069,7 @@ def _gather_current_view_dataframe(only_selected=False):
                   eff_center_x = df[x_col].astype(float).mean()
                   eff_center_y = df['MRR Growth (%)'].astype(float).mean()
 
-      plot_cx, plot_cy = to_plot_coords(eff_center_x, eff_center_y)
+      plot_cx, plot_cy = to_plot_coords(eff_center_x, eff_center_y, settings_state.get("swap_axes", False))
 
       # Çıktı sütunlarını hazırla
       out = pd.DataFrame()
@@ -1093,7 +1094,7 @@ def _gather_current_view_dataframe(only_selected=False):
       # Quadrant (plot koordinatlarına göre)
       qs = []
       for xv, yv in zip(out['MRR Value'].values, out['MRR Growth (%)'].values):
-            px, py = to_plot_coords(float(xv), float(yv))
+            px, py = to_plot_coords(float(xv), float(yv), settings_state.get("swap_axes", False))
             if px >= plot_cx and py >= plot_cy:     qs.append("(+,+)")
             elif px < plot_cx and py >= plot_cy:   qs.append("(-,+)")
             elif px < plot_cx and py < plot_cy:     qs.append("(-,-)")
@@ -1413,7 +1414,7 @@ def _highlight_matches(prefix: str):
                   except:
                         xv = float(row.get(EFFECTIVE_MRR_COL, row.get(BASE_MRR_FALLBACK_COL)))
                   yv = float(row['MRR Growth (%)'])
-                  px, py = to_plot_coords(xv, yv)
+                  px, py = to_plot_coords(xv, yv, settings_state.get("swap_axes", False))
                   xs.append(px); ys.append(py)
 
             if xs:
@@ -2219,13 +2220,6 @@ def get_updated_y_col_if_any():
                   return c
       return None
 
-
-def to_plot_coords(x_mrr, y_growth):
-      if settings_state.get("swap_axes", False):
-            return (y_growth, x_mrr)
-      return (x_mrr, y_growth)
-
-
 def compute_fit_limits(selected_sector, x_col, visible_df, pad_ratio=PAD_RATIO, eff_center=None, extra_points=None):
       xs = []; ys = []
       if selected_sector == "Sector Avg":
@@ -2235,7 +2229,7 @@ def compute_fit_limits(selected_sector, x_col, visible_df, pad_ratio=PAD_RATIO, 
                         continue
                   avg_x = float(sd[x_col].astype(float).mean())
                   avg_y = float(sd['MRR Growth (%)'].astype(float).mean())
-                  px, py = to_plot_coords(avg_x, avg_y)
+                  px, py = to_plot_coords(avg_x, avg_y, settings_state.get("swap_axes", False))
                   xs.append(px); ys.append(py)
       else:
             if selected_sector == "All":
@@ -2244,12 +2238,12 @@ def compute_fit_limits(selected_sector, x_col, visible_df, pad_ratio=PAD_RATIO, 
                   sd = visible_df[visible_df['Company Sector'] == selected_sector]
             if len(sd) > 0:
                   for xv, yv in zip(sd[x_col].astype(float).values, sd['MRR Growth (%)'].astype(float).values):
-                        px, py = to_plot_coords(float(xv), float(yv))
+                        px, py = to_plot_coords(float(xv), float(yv), settings_state.get("swap_axes", False))
                         xs.append(px); ys.append(py)
 
       if eff_center is not None:
             cx, cy = eff_center
-            px, py = to_plot_coords(cx, cy)
+            px, py = to_plot_coords(cx, cy, settings_state.get("swap_axes", False))
             xs.append(float(px)); ys.append(float(py))
 
       if extra_points:
@@ -2443,7 +2437,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                   center_y = df['MRR Growth (%)'].astype(float).mean()
             eff_center_x, eff_center_y = center_x, center_y
 
-      plot_cx, plot_cy = to_plot_coords(eff_center_x, eff_center_y)
+      plot_cx, plot_cy = to_plot_coords(eff_center_x, eff_center_y, settings_state.get("swap_axes", False))
       # Arrow’larda kullanılacak baz MRR kolonu (yaş moduna göre)
       base_col_for_arrow = get_base_mrr_col_for_age_mode()
       if base_col_for_arrow not in df.columns:
@@ -2503,7 +2497,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                    
                   avg_y = sd['MRR Growth (%)'].astype(float).mean()
                    
-                  px, py = to_plot_coords(avg_x, avg_y)
+                  px, py = to_plot_coords(avg_x, avg_y, settings_state.get("swap_axes", False))
 
                   # Noktayı Çiz
                   sc = ax.scatter(px, py, color=color_map.get(sector, 'gray'), s=250, marker='o',
@@ -2651,7 +2645,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                                     except Exception:
                                           xv = float(row.get(EFFECTIVE_MRR_COL, row.get(BASE_MRR_FALLBACK_COL)))
                                     yv = float(row['MRR Growth (%)'])
-                                    px, py = to_plot_coords(float(xv), float(yv))
+                                    px, py = to_plot_coords(float(xv), float(yv), settings_state.get("swap_axes", False))
                                     px_list.append(px); py_list.append(py)
                                      
                                     # --- RENK BELİRLEME MANTIĞI ---
@@ -2701,7 +2695,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                                     except Exception:
                                             xv = float(row.get(EFFECTIVE_MRR_COL, row.get(BASE_MRR_FALLBACK_COL)))
                                     yv = float(row['MRR Growth (%)'])
-                                    px, py = to_plot_coords(float(xv), float(yv))
+                                    px, py = to_plot_coords(float(xv), float(yv), settings_state.get("swap_axes", False))
                                     cx_list.append(px); cy_list.append(py)
                               scx = ax.scatter(cx_list, cy_list, s=90, marker='x',
                                        linewidths=2.0, color=CHURN_X_COLOR,
@@ -2718,8 +2712,8 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                                           y = float(r['MRR Growth (%)'])
                                     except Exception:
                                           continue
-                                    p0x, p0y = to_plot_coords(x0, y)
-                                    p1x, p1y = to_plot_coords(x1, y)
+                                    p0x, p0y = to_plot_coords(x0, y, settings_state.get("swap_axes", False))
+                                    p1x, p1y = to_plot_coords(x1, y, settings_state.get("swap_axes", False))
                                     old_px.append(p0x); old_py.append(p0y); new_px.append(p1x)
                                     extra_points_for_fit.append((p0x, p0y))
                                     extra_points_for_fit.append((p1x, p1y))
@@ -2728,8 +2722,8 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                                           try:
                                                 y_new = float(r[get_updated_y_col_if_any()])
                                                 x_for_y = float(r[get_plot_x_col()])
-                                                q0x, q0y = to_plot_coords(x_for_y, y)
-                                                q1x, q1y = to_plot_coords(x_for_y, y_new)
+                                                q0x, q0y = to_plot_coords(x_for_y, y, settings_state.get("swap_axes", False))
+                                                q1x, q1y = to_plot_coords(x_for_y, y_new, settings_state.get("swap_axes", False))
                                                 extra_points_for_fit.append((q0x, q0y))
                                                 extra_points_for_fit.append((q1x, q1y))
                                           except Exception:
@@ -2758,8 +2752,8 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                                                 y_new = float(r[get_updated_y_col_if_any()])
                                                 if y_old != y_new:
                                                       x_for_y_arrow = float(r[x_col])
-                                                      q0x, q0y = to_plot_coords(x_for_y_arrow, y_old)
-                                                      q1x, q1y = to_plot_coords(x_for_y_arrow, y_new)
+                                                      q0x, q0y = to_plot_coords(x_for_y_arrow, y_old, settings_state.get("swap_axes", False))
+                                                      q1x, q1y = to_plot_coords(x_for_y_arrow, y_new, settings_state.get("swap_axes", False))
                                                       ann2 = ax.annotate(
                                                             "", xy=(q1x, q1y), xytext=(q0x, q0y),
                                                             arrowprops=dict(arrowstyle="->", lw=0.8, alpha=0.45, clip_on=True)
@@ -2786,7 +2780,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                               avg_y_now = sd_for_avg[get_updated_y_col_if_any()].astype(float).mean()
                         else:
                               avg_y_now = sd_for_avg['MRR Growth (%)'].astype(float).mean()
-                        pax, pay = to_plot_coords(avg_x_now, avg_y_now)
+                        pax, pay = to_plot_coords(avg_x_now, avg_y_now, settings_state.get("swap_axes", False))
                         avg_color = 'navy'
                         sc = ax.scatter(pax, pay, color=avg_color, s=300, marker='o',
                                                 edgecolors='black', label=f"{selected_sector} Avg", zorder=3, clip_on=True)
@@ -2798,7 +2792,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                               else:
                                     old_avg_x = avg_x_now
                               old_avg_y = sd_for_avg['MRR Growth (%)'].astype(float).mean()
-                              p0x, p0y = to_plot_coords(old_avg_x, old_avg_y)
+                              p0x, p0y = to_plot_coords(old_avg_x, old_avg_y, settings_state.get("swap_axes", False))
                               p1x, p1y = pax, pay
                               extra_points_for_fit.append((p0x, p0y))
                               extra_points_for_fit.append((p1x, p1y))
@@ -2997,7 +2991,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                               except Exception:
                                     xv = float(r.get(EFFECTIVE_MRR_COL, r.get(BASE_MRR_FALLBACK_COL)))
                               yv = float(r['MRR Growth (%)'])
-                              px, py = to_plot_coords(xv, yv)
+                              px, py = to_plot_coords(xv, yv, settings_state.get("swap_axes", False))
                               risk_name = str(r.get(RISK_COL, "")).strip().upper()
                               rgb = to_rgb(RISK_COLOR.get(risk_name, (0.8,0.8,0.8)))
 
@@ -4578,8 +4572,8 @@ def draw_selection_highlights():
                         _, raw_x, raw_y = item
                   else:
                         raw_x, raw_y = item
-
-                  px, py = to_plot_coords(raw_x, raw_y)
+                        
+                  px, py = to_plot_coords(raw_x, raw_y, settings_state.get("swap_axes", False))
                   xs.append(px)
                   ys.append(py)
 
@@ -4848,7 +4842,7 @@ def on_select_release(event):
                               except: val_x = float(row.get(EFFECTIVE_MRR_COL, row.get(BASE_MRR_FALLBACK_COL)))
                               val_y = float(row['MRR Growth (%)'])
                                
-                              px, py = to_plot_coords(val_x, val_y)
+                              px, py = to_plot_coords(val_x, val_y, settings_state.get("swap_axes", False))
                               key = get_point_key(row, settings_state)
                                
                               if (x_min <= px <= x_max) and (y_min <= py <= y_max):

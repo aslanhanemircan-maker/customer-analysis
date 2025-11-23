@@ -248,3 +248,12 @@ def maximize_main_window(win, prefer_kiosk=False):
         win.geometry(f"{sw}x{sh}+0+0")
     except Exception:
         pass
+
+def to_plot_coords(x_mrr, y_growth, swap_axes=False):
+    """
+    Verilen (MRR, Growth) değerlerini, ayardaki 'Swap Axes' durumuna göre
+    (X, Y) koordinatına çevirir.
+    """
+    if swap_axes:
+        return (y_growth, x_mrr)
+    return (x_mrr, y_growth)    
