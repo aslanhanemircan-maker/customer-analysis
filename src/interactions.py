@@ -294,4 +294,57 @@ def handle_select_release(event, selection_state, ax, canvas, get_point_key_func
                              selection_state["selected_keys"].add(key)
                              changed = True
 
-    return changed    
+    return changed   
+
+def handle_focus_shortcut_press(event, settings_state, search_var, keyboard_focus_state, btn_focus_widget, on_focus_press_callback):
+    """
+    Shift tuşuna basıldığında Single Mode'u aktif eder.
+    """
+    # 1. Arama kutusu kapalıysa çalışma
+    if not settings_state.get("activate_search_box", False):
+        return
+    
+    # 2. Arama kutusu boşsa çalışma (Boşken odaklanacak bir şey yok)
+    # search_var bir Tkinter StringVar nesnesi mi yoksa düz string mi kontrol et
+    try:
+        term = search_var.get().strip()
+    except AttributeError:
+        term = str(search_var).strip()
+
+    if not term:
+        return
+
+    # 3. Basılan tuş Shift mi? (Sol veya Sağ)
+    if "shift" in event.keysym.lower():
+        # Eğer zaten aktif değilse aktifleştir (Tekrar tekrar tetiklenmesin)
+        if not keyboard_focus_state["active"]:
+            keyboard_focus_state["active"] = True
+            
+            # Butonu görsel olarak basılı yap
+            try: 
+                btn_focus_widget.state(["pressed"])
+            except: 
+                pass
+            
+            # İşlemi başlat
+            if on_focus_press_callback:
+                on_focus_press_callback(None)
+
+def handle_focus_shortcut_release(event, keyboard_focus_state, btn_focus_widget, on_focus_release_callback):
+    """
+    Shift bırakıldığında Single Mode'u kapatır.
+    """
+    if "shift" in event.keysym.lower():
+        # Eğer aktifse kapat
+        if keyboard_focus_state["active"]:
+            keyboard_focus_state["active"] = False
+            
+            # Buton görselini düzelt
+            try: 
+                btn_focus_widget.state(["!pressed"])
+            except: 
+                pass
+            
+            # Single Mode'dan çık
+            if on_focus_release_callback:
+                on_focus_release_callback(None)    

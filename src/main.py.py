@@ -47,7 +47,9 @@ from interactions import (
     handle_pan_motion,
     handle_select_press,
     handle_select_motion,
-    handle_select_release
+    handle_select_release,
+    handle_focus_shortcut_press,
+    handle_focus_shortcut_release
 )
 
 CHURN_X_COLOR = 'red' 
@@ -3782,53 +3784,21 @@ keyboard_focus_state = {
       "active": False   # Şu an Single Mode aktif mi?
 }
 
-def _on_key_press_focus_shortcut(event):
-      """Tuşa basıldığında: Sadece Shift ise Single Mode'u aç."""
-       
-      # 1. Arama kutusu kapalıysa çalışma
-      if not settings_state.get("activate_search_box", False):
-            return
-
-      # 2. Arama kutusu boşsa çalışma (Boşken odaklanacak bir şey yok)
-      if not search_var.get().strip():
-            return
-
-      # 3. Basılan tuş Shift mi? (Sol veya Sağ)
-      if "shift" in event.keysym.lower():
-            # Eğer zaten aktif değilse aktifleştir (Tekrar tekrar tetiklenmesin)
-            if not keyboard_focus_state["active"]:
-                  keyboard_focus_state["active"] = True
-                   
-                  # Butonu görsel olarak basılı yap
-                  try: btn_focus.state(["pressed"])
-                  except: pass
-                   
-                  # Single Mode fonksiyonunu çağır
-                  _on_focus_press(None)
-
-def _on_key_release_focus_shortcut(event):
-      """Tuş bırakıldığında: Shift bırakılırsa Single Mode'u kapat."""
-       
-      if "shift" in event.keysym.lower():
-            # Eğer aktifse kapat
-            if keyboard_focus_state["active"]:
-                  keyboard_focus_state["active"] = False
-                   
-                  # Buton görselini düzelt
-                  try: btn_focus.state(["!pressed"])
-                  except: pass
-                   
-                  # Single Mode'dan çık
-                  _on_focus_release(None)
-
 # --- Tuşları Bağla (Sadece Shift) ---
 # Önceki Ctrl bağlamalarını temizlemeye gerek yok, üstüne yazmaz ama
 # temiz bir başlangıç için sadece bunları eklemeniz yeterli.
 
-root.bind("<KeyPress-Shift_L>",     _on_key_press_focus_shortcut, add="+")
-root.bind("<KeyPress-Shift_R>",     _on_key_press_focus_shortcut, add="+")
+# --- Tuşları Bağla (Sadece Shift) ---
+root.bind("<KeyPress-Shift_L>", lambda e: handle_focus_shortcut_press(
+    e, settings_state, search_var, keyboard_focus_state, btn_focus, _on_focus_press), add="+")
 
-root.bind("<KeyRelease-Shift_L>", _on_key_release_focus_shortcut, add="+")
-root.bind("<KeyRelease-Shift_R>", _on_key_release_focus_shortcut, add="+")
+root.bind("<KeyPress-Shift_R>", lambda e: handle_focus_shortcut_press(
+    e, settings_state, search_var, keyboard_focus_state, btn_focus, _on_focus_press), add="+")
+
+root.bind("<KeyRelease-Shift_L>", lambda e: handle_focus_shortcut_release(
+    e, keyboard_focus_state, btn_focus, _on_focus_release), add="+")
+
+root.bind("<KeyRelease-Shift_R>", lambda e: handle_focus_shortcut_release(
+    e, keyboard_focus_state, btn_focus, _on_focus_release), add="+")
 # Main loop
 root.mainloop()
