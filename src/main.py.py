@@ -1979,7 +1979,6 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
             and settings_state.get("use_updated_exc_license_values", False)
             and settings_state.get("show_difference_arrows", False)
             and ('Exc. License MRR' in visible_df.columns)
-            and selected_sector != "Sector Avg"
       )
       extra_points_for_fit = []
 
@@ -2033,6 +2032,59 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                   # Noktayı Çiz
                   sc = ax.scatter(px, py, color=color_map.get(sector, 'gray'), s=250, marker='o',
                                           edgecolors='black', label=f"{sector} Avg", zorder=3, clip_on=True)
+                  if show_arrows_flag:
+                        try:
+                              # 1. Eski Ortalamayı Bul (Base MRR'ın ortalaması)
+                              # 'base_col_for_arrow' değişkeni fonksiyonun başında hesaplanmıştı
+                              if base_col_for_arrow in sd.columns:
+                                    old_avg_raw_x = sd[base_col_for_arrow].astype(float).mean()
+                              else:
+                                    # Kolon yoksa arrow çizilemez, pas geç
+                                    old_avg_raw_x = avg_x 
+
+                              # 2. Yeni Ortalamayı Bul (Zaten avg_x ve avg_y olarak hesaplanmıştı)
+                              new_avg_raw_x = avg_x
+                              
+                              # 3. Y Ekseni (Growth) Değişimi Var mı?
+                              old_avg_raw_y = sd['MRR Growth (%)'].astype(float).mean()
+                              
+                              updated_y_col = get_updated_y_col_if_any()
+                              if updated_y_col and updated_y_col in sd.columns:
+                                    new_avg_raw_y = sd[updated_y_col].astype(float).mean()
+                              else:
+                                    new_avg_raw_y = avg_y # Değişmediyse aynısı
+
+                              # 4. Koordinatları Hesapla (Swap Axes durumuna göre)
+                              p0x, p0y = to_plot_coords(old_avg_raw_x, old_avg_raw_y, settings_state.get("swap_axes", False))
+                              p1x, p1y = to_plot_coords(new_avg_raw_x, new_avg_raw_y, settings_state.get("swap_axes", False))
+
+                              # 5. Çizim Yap (Sadece hareket varsa)
+                              if (abs(p0x - p1x) > 0.001) or (abs(p0y - p1y) > 0.001):
+                                    
+                                    # A) Eski konuma silik bir "hayalet" nokta koy (Nereden geldiği belli olsun)
+                                    ax.scatter([p0x], [p0y], 
+                                               color=color_map.get(sector, 'gray'), 
+                                               s=250, # Ana nokta ile aynı boyut
+                                               alpha=0.3, # Silik
+                                               edgecolors='none', 
+                                               zorder=2) # Ana noktanın altında kalsın
+
+                                    # B) Oku Çiz
+                                    ax.annotate("", 
+                                                xy=(p1x, p1y),      # Okun ucu (Yeni yer)
+                                                xytext=(p0x, p0y),  # Okun başlangıcı (Eski yer)
+                                                arrowprops=dict(
+                                                      arrowstyle="->", 
+                                                      color="black",
+                                                      lw=1.5,       # Biraz daha kalın
+                                                      alpha=0.6, 
+                                                      shrinkA=0, 
+                                                      shrinkB=0
+                                                ),
+                                                zorder=4
+                                    )
+                        except Exception as e:
+                              print(f"Avg arrow error: {e}")
                   scatter_points.append((sc, sd))
                   avg_points.append((sector, px, py, color_map.get(sector, 'gray'), count))
                    
@@ -3088,34 +3140,41 @@ canvas.mpl_connect("motion_notify_event", on_motion_pan)
 
 def refresh_show_arrows_enabled():
       sel = sector_combobox.get()
-      enabled = (license_var.get() == "Exc." and exc_updated_var.get() and sel != "Sector Avg")
+      
+      # 1. Doğrudan settings_state'ten okuyalım (Daha güvenli)
+      # on_exc_updated_toggle fonksiyonu bu değeri güncellediği için burası kesin doğrudur.
+      is_updated_checked = settings_state.get("use_updated_exc_license_values", False)
+      
+      # 2. MANTIK: Exc. Modu + Updated Seçili + Sector Avg Değil
+      enabled = (license_var.get() == "Exc." and settings_state.get("use_updated_exc_license_values", False))
+      # -------------------------
+
       if not enabled:
+            # Şartlar sağlanmıyorsa kapat ve pasif yap
             exc_show_arrows_var.set(False)
             settings_state["show_difference_arrows"] = False
-            exc_show_arrows_cb.configure(state=tk.DISABLED)
+            try:
+                exc_show_arrows_cb.configure(state="disabled")
+            except: pass
       else:
-            exc_show_arrows_cb.configure(state=tk.NORMAL)
+            # Şartlar sağlandıysa aktif yap (tıklanabilir olsun)
+            try:
+                exc_show_arrows_cb.configure(state="normal")
+            except: pass
 
 
 def on_sector_change(event):
-      # ... (Mevcut logic devam ediyor) ...
-      if sector_combobox.get() == "Sector Avg":
-            if exc_show_arrows_var.get():
-                  exc_show_arrows_var.set(False)
-                  settings_state["show_difference_arrows"] = False
-       
+      # refresh fonksiyonu kilidi açıp kapatıyordu, onu da zaten bir önceki adımda düzelttik
       refresh_show_arrows_enabled()
-      toggle_regression_buttons_visibility() # Regresyon buton kontrolü
+      
+      toggle_regression_buttons_visibility()
 
       update_plot(sector_combobox.get(), preserve_zoom=False, fit_to_data=True)
       _apply_churn_labels_visibility()
-       
+        
       if settings_state.get("activate_search_box", False):
             _update_search_list(search_var.get())
 
-      # --- DÜZELTME: Focus Lag Çözümü ---
-      # Seçimden hemen sonra odağı ana pencereye/canvas'a zorla ver.
-      # Böylece Ctrl tuşu anında algılanır.
       canvas.get_tk_widget().focus_set()
       root.focus_set()
 
@@ -3138,17 +3197,17 @@ exc_show_arrows_var = tk.BooleanVar(value=settings_state.get("show_difference_ar
 
 
 def on_exc_updated_toggle():
+      # 1. Önce değişkeni settings'e kesin olarak yaz
       settings_state["use_updated_exc_license_values"] = bool(exc_updated_var.get())
+      
+      # 2. Şimdi kilit fonksiyonunu çağır (Artık settings'den okuyacağı için 'True' görecektir)
       refresh_show_arrows_enabled()
+      
+      # 3. Grafiği yenile
       update_plot(sector_combobox.get(), preserve_zoom=False, fit_to_data=True)
 
 
 def on_exc_show_arrows_toggle():
-      if sector_combobox.get() == "Sector Avg":
-            exc_show_arrows_var.set(False)
-            settings_state["show_difference_arrows"] = False
-            refresh_show_arrows_enabled()
-            return
       settings_state["show_difference_arrows"] = bool(exc_show_arrows_var.get())
       update_plot(sector_combobox.get(), preserve_zoom=False, fit_to_data=True)
 
