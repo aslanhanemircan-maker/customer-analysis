@@ -14,8 +14,8 @@ except Exception:
       _HAS_TKCALENDAR = False   # Yüklü değilse fallback olarak Entry kullanılacak
 
 from settings_window import show_settings_window      
-from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL, get_point_key, get_limit_removed_keys, is_risk_allowed, apply_churn_filters, apply_age_filters, get_growth_source_col_for_age_mode, get_base_mrr_col_for_age_mode, get_exc_mrr_col_for_age_mode, is_risk_view_active, calculate_churn_stats, get_visible_customer_names, prepare_export_dataframe, get_plot_x_col, get_updated_y_col_if_any
-
+from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL, get_point_key, get_limit_removed_keys, is_risk_allowed, apply_churn_filters, apply_age_filters, get_growth_source_col_for_age_mode, get_base_mrr_col_for_age_mode, get_exc_mrr_col_for_age_mode, is_risk_view_active, calculate_churn_stats, get_visible_customer_names, get_plot_x_col, get_updated_y_col_if_any
+from export_manager import run_export_workflow
 from analysis import calculate_kmeans_labels, calculate_pareto_mask, calculate_regression_line, apply_regression_filter
 from utils import (
     external_resource_path, 
@@ -37,7 +37,6 @@ from ui_components import (
     set_tooltip, 
     create_collapsible_stat_card, 
     center_over_parent,
-    ask_export_scope,
     get_banner_text,
     strip_focus_globally
 )
@@ -323,78 +322,17 @@ def _load_excel_icon():
 _load_excel_icon()
 
 def _export_to_excel():
-      """ Save As diyalogu açar, seçim varsa kullanıcıya sorar. """
-       
-      # 1. Seçim var mı kontrol et
-      selected_count = len(selection_state.get("selected_keys", []))
-      export_mode = "all" # Varsayılan davranış
-
-      if selected_count > 0:
-            # Seçim varsa kullanıcıya sor
-            user_choice = ask_export_scope(root, selected_count)
-            if user_choice is None:
-                  return # İptal etti veya pencereyi kapattı
-            export_mode = user_choice
-
-      # 2. Dosya konumu seç
-      try:
-            initial_dir = os.path.dirname(file_path) if file_path else os.getcwd()
-      except Exception:
-            initial_dir = os.getcwd()
-
-      default_name = "Selected_Data.xlsx" if export_mode == "selected" else "Chart_Data.xlsx"
-
-      save_path = filedialog.asksaveasfilename(
-            parent=root,
-            title="Dışa aktarılacak Excel konumunu seçin",
-            defaultextension=".xlsx",
-            filetypes=[("Excel Workbook", "*.xlsx")],
-            initialdir=initial_dir,
-            initialfile=default_name
-      )
-      if not save_path:
-            return  
-
-      try:
-            # 3. Veriyi topla (only_selected parametresini kullanarak)
-            is_selected_only = (export_mode == "selected")
-            # Gizli anahtarları topla
-            current_hidden = set().union(
-                manual_removed, 
-                license_removed, 
-                get_limit_removed_keys(df, settings_state)
-            )
-            current_hidden = current_hidden.union(regression_removed)
-            
-            # Yeni fonksiyonu çağır
-            data = prepare_export_dataframe(
-                df, 
-                settings_state, 
-                current_hidden, 
-                sector_combobox.get(), 
-                selection_state.get("selected_keys", set()), 
-                only_selected=is_selected_only
-            )
-
-            if data.empty:
-                  tk.messagebox.showwarning("Uyarı", "Dışa aktarılacak veri bulunamadı.")
-                  return
-
-            # 4. Yaz
-            try:
-                  with pd.ExcelWriter(save_path, engine="openpyxl") as writer:
-                        data.to_excel(writer, index=False, sheet_name="Chart Data")
-            except Exception:
-                  with pd.ExcelWriter(save_path) as writer:
-                        data.to_excel(writer, index=False, sheet_name="Chart Data")
-
-      except Exception as e:
-            err = tk.Toplevel(root)
-            err.title("Export error")
-            err.transient(root)
-            center_over_parent(err, root, 400, 150)
-            tk.Label(err, text="Export failed:\n"+str(e), fg="red", wraplength=350).pack(expand=True, padx=20, pady=20)
-            ttk.Button(err, text="Close", command=err.destroy).pack(pady=(0,10))
+    run_export_workflow(
+        parent=root,
+        df=df,
+        file_path_ref=file_path,
+        settings_state=settings_state,
+        selection_state=selection_state,
+        manual_removed=manual_removed,
+        license_removed=license_removed,
+        regression_removed=regression_removed,
+        current_sector=sector_combobox.get()
+    )
 
 
 # Excel butonu (ikon varsa image, yoksa metin)
