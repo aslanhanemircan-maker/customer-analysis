@@ -93,3 +93,51 @@ def calculate_regression_line(df_in, x_col, swap_axes=False):
         print(f"Regresyon Hatası: {e}")
         
     return result
+
+def apply_regression_filter(df_in, x_col, settings_state, regression_line, regression_removed_set, swap_axes=False):
+    """
+    Hesaplanmış regresyon çizgisine göre dataframe'i filtreler.
+    Gizlenen noktaları 'regression_removed_set' kümesine ekler.
+    """
+    # Circular import olmaması için get_point_key'i burada import ediyoruz
+    from data_ops import get_point_key
+
+    filter_mode = settings_state.get("regression_filter", "none")
+    m = regression_line.get('m')
+    b = regression_line.get('b')
+
+    # 1. Filtre kapalıysa veya çizgi yoksa temizle ve çık
+    if filter_mode == "none" or m is None or b is None:
+        regression_removed_set.clear()
+        return df_in
+
+    # 2. Eksen durumuna göre X ve Y verilerini ayarla
+    if swap_axes:
+        # Eksenler ters (Y=MRR, X=Growth)
+        x_data = df_in['MRR Growth (%)'].astype(float)
+        y_data = df_in[x_col].astype(float)
+    else:
+        # Normal (Y=Growth, X=MRR)
+        x_data = df_in[x_col].astype(float)
+        y_data = df_in['MRR Growth (%)'].astype(float)
+    
+    # 3. Tahmini Y'yi hesapla: y_pred = m*x + b
+    y_pred = m * x_data + b
+    
+    # 4. Maskeleme
+    if filter_mode == "above":
+        mask = (y_data >= y_pred)
+    elif filter_mode == "below":
+        mask = (y_data <= y_pred)
+    else:
+        mask = True 
+    
+    # 5. Gizlenenleri kaydet
+    regression_removed_set.clear()
+    
+    if mask is not True:
+        removed_df = df_in[~mask]
+        for _, row in removed_df.iterrows():
+            regression_removed_set.add(get_point_key(row, settings_state))
+    
+    return df_in[mask]

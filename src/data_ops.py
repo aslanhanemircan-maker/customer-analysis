@@ -503,3 +503,19 @@ def get_plot_x_col(df, settings_state, license_mode_string):
     # Yoksa varsayılan EFFECTIVE_MRR_COL dön
     # (Not: EFFECTIVE_MRR_COL bu dosyanın yukarısında zaten tanımlıdır)
     return EFFECTIVE_MRR_COL
+
+def get_updated_y_col_if_any(df):
+    """
+    Veri setinde güncellenmiş Growth kolonlarından biri varsa adını döner.
+    """
+    candidates = [
+        'Exc. License Growth (%)',
+        'Updated Growth (%)',
+        'MRR Growth Updated (%)',
+        'New MRR Growth (%)',
+        'Growth Updated (%)'
+    ]
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None

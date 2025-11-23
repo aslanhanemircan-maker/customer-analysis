@@ -14,9 +14,9 @@ except Exception:
       _HAS_TKCALENDAR = False   # Yüklü değilse fallback olarak Entry kullanılacak
 
 from settings_window import show_settings_window      
-from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL, get_point_key, get_limit_removed_keys, is_risk_allowed, apply_churn_filters, apply_age_filters, get_growth_source_col_for_age_mode, get_base_mrr_col_for_age_mode, get_exc_mrr_col_for_age_mode, is_risk_view_active, calculate_churn_stats, get_visible_customer_names, prepare_export_dataframe, get_plot_x_col
+from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL, get_point_key, get_limit_removed_keys, is_risk_allowed, apply_churn_filters, apply_age_filters, get_growth_source_col_for_age_mode, get_base_mrr_col_for_age_mode, get_exc_mrr_col_for_age_mode, is_risk_view_active, calculate_churn_stats, get_visible_customer_names, prepare_export_dataframe, get_plot_x_col, get_updated_y_col_if_any
 
-from analysis import calculate_kmeans_labels, calculate_pareto_mask, calculate_regression_line
+from analysis import calculate_kmeans_labels, calculate_pareto_mask, calculate_regression_line, apply_regression_filter
 from utils import (
     external_resource_path, 
     enable_per_monitor_dpi_awareness, 
@@ -1181,68 +1181,6 @@ active_legends = []
 
 undo_stack = []
 
-def _apply_regression_filter(df_in: pd.DataFrame, x_col: str) -> pd.DataFrame:
-      """
-      YENİ: Varsa, hesaplanmış regresyon çizgisine göre filtreler (above/below).
-      Çizgi hesaplanmamışsa (None) veya filtre "none" ise değişiklik yapmaz.
-      """
-      filter_mode = settings_state.get("regression_filter", "none")
-      m = current_regression_line.get('m')
-      b = current_regression_line.get('b')
-
-      if filter_mode == "none" or m is None or b is None:
-            regression_removed.clear() # Filtre kapalıyken eski gizlenenleri temizle
-            return df_in
-
-      if settings_state.get("swap_axes", False):
-            # Eksenler ters (Y=MRR, X=Growth)
-            # y = mx + b -> (MRR) = m*(Growth) + b
-            # Bizim y değerimiz (MRR) = row[x_col]
-            # Bizim x değerimiz (Growth) = row['MRR Growth (%)']
-            x_data = df_in['MRR Growth (%)'].astype(float)
-            y_data = df_in[x_col].astype(float)
-      else:
-            # Normal (Y=Growth, X=MRR)
-            # y = mx + b -> (Growth) = m*(MRR) + b
-            # Bizim x değerimiz (MRR) = row[x_col]
-            # Bizim y değerimiz (Growth) = row['MRR Growth (%)']
-            x_data = df_in[x_col].astype(float)
-            y_data = df_in['MRR Growth (%)'].astype(float)
-    
-      # y_pred = m*x + b (çizginin y'si)
-      y_pred = m * x_data + b
-    
-      if filter_mode == "above":
-            # Sadece (y_data > y_pred) olanlar kalsın
-            mask = (y_data >= y_pred)
-      elif filter_mode == "below":
-            # Sadece (y_data < y_pred) olanlar kalsın
-            mask = (y_data <= y_pred)
-      else:
-            mask = True # Hepsini tut
-    
-      # Gizlenenleri regression_removed set'ine ekle (undo vb için değil, sadece takip)
-      regression_removed.clear()
-      if mask is not True:
-            removed_df = df_in[~mask]
-            for _, row in removed_df.iterrows():
-                  regression_removed.add(get_point_key(row, settings_state))
-    
-      return df_in[mask]
-
-def get_updated_y_col_if_any():
-      candidates = [
-            'Exc. License Growth (%)',
-            'Updated Growth (%)',
-            'MRR Growth Updated (%)',
-            'New MRR Growth (%)',
-            'Growth Updated (%)'
-      ]
-      for c in candidates:
-            if c in df.columns:
-                  return c
-      return None
-
 # =====================================================
 # Çizim / etkileşim
 # =====================================================
@@ -1392,7 +1330,14 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
       # ===================== YENİ: REGRESYON FİLTRESİ UYGULAMA =====================
       # Çizgi hesaplandıktan sonra, EĞER 'above' veya 'below' seçiliyse,
       # visible_df'i filtrele.
-      visible_df = _apply_regression_filter(visible_df_base, x_col)
+      visible_df = apply_regression_filter(
+        visible_df_base,
+        x_col,
+        settings_state,
+        current_regression_line,
+        regression_removed,
+        swap_axes=settings_state.get("swap_axes", False)
+      )
       # ===================== /REGRESYON FİLTRESİ =====================
 
       total_customers = 0
@@ -1750,9 +1695,9 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                                     extra_points_for_fit.append((p0x, p0y))
                                     extra_points_for_fit.append((p1x, p1y))
 
-                                    if get_updated_y_col_if_any() is not None:
+                                    if get_updated_y_col_if_any(df) is not None:
                                           try:
-                                                y_new = float(r[get_updated_y_col_if_any()])
+                                                y_new = float(r[get_updated_y_col_if_any(df)])
                                                 x_for_y = float(r[get_plot_x_col()])
                                                 q0x, q0y = to_plot_coords(x_for_y, y, settings_state.get("swap_axes", False))
                                                 q1x, q1y = to_plot_coords(x_for_y, y_new, settings_state.get("swap_axes", False))
