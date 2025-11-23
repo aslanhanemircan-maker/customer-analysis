@@ -185,3 +185,60 @@ def ask_export_scope(parent, count):
     # Pencere kapanana kadar bekle
     parent.wait_window(dialog)
     return result[0]
+
+def get_banner_text(settings_state):
+    """
+    Aktif filtrelere göre banner metnini oluşturur.
+    """
+    active_items = []
+
+    # 1. Fixed Axis Durumu
+    if settings_state.get("fixed_axis", False):
+        active_items.append("FIXED AXES ACTIVE")
+
+    # 2. Limit Seçenekleri
+    if settings_state.get("mode") == "limit":
+        m_min = settings_state.get("mrr_min")
+        m_max = settings_state.get("mrr_max")
+        g_min = settings_state.get("growth_min")
+        g_max = settings_state.get("growth_max")
+
+        if m_min is not None: active_items.append(f"MRR Min: {m_min:,.0f}")
+        if m_max is not None: active_items.append(f"MRR Max: {m_max:,.0f}")
+        if g_min is not None: active_items.append(f"Growth Min: %{g_min:.1f}")
+        if g_max is not None: active_items.append(f"Growth Max: %{g_max:.1f}")
+
+    # 3. Filter by Age
+    age_mode = settings_state.get("age_filter_mode", "0-Current")
+    if age_mode != "0-Current":
+        clean_age = age_mode.replace("(", "").replace(")", "")
+        active_items.append(f"Age: {clean_age}")
+
+    # 4. License Reverse
+    if settings_state.get("reverse_effect", False):
+        active_items.append("Rev. License")
+
+    # 5. Regresyon Filtresi (Above/Below)
+    reg_filt = settings_state.get("regression_filter", "none")
+    if reg_filt == "above":
+        active_items.append("Filter: Above Trend")
+    elif reg_filt == "below":
+        active_items.append("Filter: Below Trend")
+
+    # 6. Regresyon Durumu
+    if settings_state.get("show_regression_line", False):
+        # Eğer sabitlenmişse belirt
+        if settings_state.get("fix_regression_line", False):
+            # Hafızadaki eğim değerini alıp gösterebiliriz
+            params = settings_state.get("fixed_regression_params", {})
+            m_val = params.get("m") if params else None
+            if m_val is not None:
+                active_items.append(f"Trend Line: FIXED (Slope={m_val:.4f})")
+            else:
+                active_items.append("Trend Line: FIXED")
+    
+    if not active_items:
+        return ""
+        
+    separator = "      |      "
+    return separator.join(active_items)
