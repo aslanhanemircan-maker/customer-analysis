@@ -257,3 +257,82 @@ def to_plot_coords(x_mrr, y_growth, swap_axes=False):
     if swap_axes:
         return (y_growth, x_mrr)
     return (x_mrr, y_growth)    
+
+def compute_fit_limits(selected_sector, x_col, visible_df, sectors_list, pad_ratio=0.1, eff_center=None, extra_points=None, swap_axes=False):
+    """
+    Grafiğin zoom limitlerini hesaplar.
+    """
+    # to_plot_coords fonksiyonunu kullanabilmek için
+    # Eğer to_plot_coords bu dosyanın (utils.py) yukarısındaysa sorun yok.
+    # Değilse burada tanımlı olduğundan emin ol.
+    
+    xs = []; ys = []
+    if selected_sector == "Sector Avg":
+        for sector in sectors_list:
+            sd = visible_df[visible_df['Company Sector'] == sector]
+            if len(sd) == 0:
+                continue
+            try:
+                avg_x = float(sd[x_col].astype(float).mean())
+            except:
+                # x_col yoksa Effective MRR dene (Fallback)
+                # Burası için string kontrolü yapıyoruz
+                if 'Effective MRR' in sd.columns:
+                    avg_x = float(sd['Effective MRR'].astype(float).mean())
+                elif 'First Year Ending MRR' in sd.columns:
+                    avg_x = float(sd['First Year Ending MRR'].astype(float).mean())
+                else:
+                    continue
+                
+            avg_y = float(sd['MRR Growth (%)'].astype(float).mean())
+            
+            # swap_axes parametresini kullanıyoruz (utils içinde to_plot_coords varsa onu çağırabilirsin)
+            # ya da direkt burada hesapla:
+            if swap_axes:
+                px, py = (avg_y, avg_x)
+            else:
+                px, py = (avg_x, avg_y)
+            
+            xs.append(px); ys.append(py)
+    else:
+        if selected_sector == "All":
+            sd = visible_df
+        else:
+            sd = visible_df[visible_df['Company Sector'] == selected_sector]
+        
+        if len(sd) > 0:
+            for xv, yv in zip(sd[x_col].astype(float).values, sd['MRR Growth (%)'].astype(float).values):
+                if swap_axes:
+                    px, py = (yv, xv)
+                else:
+                    px, py = (xv, yv)
+                xs.append(px); ys.append(py)
+
+    if eff_center is not None:
+        cx, cy = eff_center
+        if swap_axes:
+            px, py = (cy, cx)
+        else:
+            px, py = (cx, cy)
+        xs.append(float(px)); ys.append(float(py))
+
+    if extra_points:
+        for ex, ey in extra_points:
+            xs.append(float(ex)); ys.append(float(ey))
+
+    if not xs or not ys:
+        return None
+
+    xmin, xmax = min(xs), max(xs)
+    ymin, ymax = min(ys), max(ys)
+    
+    xspan = xmax - xmin
+    yspan = ymax - ymin
+    
+    if xspan == 0: xspan = max(abs(xmax) * 0.02, 1.0)
+    if yspan == 0: yspan = max(abs(ymax) * 0.02, 1.0)
+    
+    xpad = xspan * pad_ratio
+    ypad = yspan * pad_ratio
+    
+    return (xmin - xpad, xmax + xpad, ymin - ypad, ymax + ypad)

@@ -27,7 +27,8 @@ from utils import (
     parse_optional_number,
     validate_float,
     maximize_main_window,
-    to_plot_coords
+    to_plot_coords,
+    compute_fit_limits
 )
 
 from ui_components import (
@@ -35,7 +36,8 @@ from ui_components import (
     create_collapsible_stat_card, 
     center_over_parent,
     ask_export_scope,
-    get_banner_text
+    get_banner_text,
+    strip_focus_globally
 )
 
 CHURN_X_COLOR = 'red' 
@@ -103,6 +105,16 @@ settings_state = {
       # YENİ: Regresyon ayarları
       "fix_regression_line": False,           # Çizgiyi sabitleme ayarı
       "fixed_regression_params": None,      # Sabitlenen m ve b değerlerini tutacak sözlük
+}
+
+# Seçim durumu ve değişkenleri
+selection_state = {
+      "active": False,
+      "start_pos": None,
+      "rect": None,
+      "selected_keys": set(),
+      "highlight_artists": [],
+      "background": None   # <--- YENİ: Arka planı hafızada tutmak için
 }
 
 # ========================== Ana Uygulama (Lazy Import ile) ==========================
@@ -1768,48 +1780,6 @@ def get_updated_y_col_if_any():
                   return c
       return None
 
-def compute_fit_limits(selected_sector, x_col, visible_df, pad_ratio=PAD_RATIO, eff_center=None, extra_points=None):
-      xs = []; ys = []
-      if selected_sector == "Sector Avg":
-            for sector in sectors:
-                  sd = visible_df[visible_df['Company Sector'] == sector]
-                  if len(sd) == 0:
-                        continue
-                  avg_x = float(sd[x_col].astype(float).mean())
-                  avg_y = float(sd['MRR Growth (%)'].astype(float).mean())
-                  px, py = to_plot_coords(avg_x, avg_y, settings_state.get("swap_axes", False))
-                  xs.append(px); ys.append(py)
-      else:
-            if selected_sector == "All":
-                  sd = visible_df
-            else:
-                  sd = visible_df[visible_df['Company Sector'] == selected_sector]
-            if len(sd) > 0:
-                  for xv, yv in zip(sd[x_col].astype(float).values, sd['MRR Growth (%)'].astype(float).values):
-                        px, py = to_plot_coords(float(xv), float(yv), settings_state.get("swap_axes", False))
-                        xs.append(px); ys.append(py)
-
-      if eff_center is not None:
-            cx, cy = eff_center
-            px, py = to_plot_coords(cx, cy, settings_state.get("swap_axes", False))
-            xs.append(float(px)); ys.append(float(py))
-
-      if extra_points:
-            for ex, ey in extra_points:
-                  xs.append(float(ex)); ys.append(float(ey))
-
-      if not xs or not ys:
-            return None
-
-      xmin, xmax = min(xs), max(xs)
-      ymin, ymax = min(ys), max(ys)
-      xspan = xmax - xmin
-      yspan = ymax - ymin
-      if xspan == 0: xspan = max(abs(xmax) * 0.02, 1.0)
-      if yspan == 0: yspan = max(abs(ymax) * 0.02, 1.0)
-      xpad = xspan * pad_ratio
-      ypad = yspan * pad_ratio
-      return (xmin - xpad, xmax + xpad, ymin - ypad, ymax + ypad)
 # =====================================================
 # Çizim / etkileşim
 # =====================================================
@@ -2473,16 +2443,29 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
       # ====== LİMİTLERİ AYARLA ======
       if fit_to_data:
             # Fit_to_data yaparken *filtreli* visible_df kullanılır
+            swap_status = settings_state.get("swap_axes", False)
             if show_arrows_flag and extra_points_for_fit:
-                  limits = compute_fit_limits(
-                        sector_combobox.get(), x_col, visible_df, pad_ratio=PAD_RATIO,
-                        eff_center=(eff_center_x, eff_center_y), extra_points=extra_points_for_fit
-                  )
+                limits = compute_fit_limits(
+                      sector_combobox.get(), 
+                      x_col, 
+                      visible_df, 
+                      sectors, # <-- Global değişken
+                      pad_ratio=PAD_RATIO,
+                      eff_center=(eff_center_x, eff_center_y), 
+                      extra_points=extra_points_for_fit,
+                      swap_axes=swap_status
+                )
             else:
-                  limits = compute_fit_limits(
-                        sector_combobox.get(), x_col, visible_df, pad_ratio=PAD_RATIO,
-                        eff_center=(eff_center_x, eff_center_y), extra_points=None
-                  )
+                limits = compute_fit_limits(
+                      sector_combobox.get(), 
+                      x_col, 
+                      visible_df, 
+                      sectors, # <-- Global değişken
+                      pad_ratio=PAD_RATIO,
+                      eff_center=(eff_center_x, eff_center_y), 
+                      extra_points=None,
+                      swap_axes=swap_status
+                )
             if limits is not None:
                   xmin, xmax, ymin, ymax = limits
                   ax.set_xlim(xmin, xmax)
@@ -3505,53 +3488,9 @@ root.bind("<Control-R>", lambda e: trigger_auto_zoom())
 # Ctrl+Shift+R veya Ctrl+Alt+R daha stabildir. Ctrl+Alt+L kullanalım (L = Line).
 root.bind("<Control-l>", _toggle_regression_line_hotkey)
 root.bind("<Control-L>", _toggle_regression_line_hotkey)
-root.bind("<Control-g>", lambda e: open_handbook())
-root.bind("<Control-G>", lambda e: open_handbook()) # Büyük harf hassasiyeti için
+root.bind("<Control-g>", lambda e: open_handbook(root))
+root.bind("<Control-G>", lambda e: open_handbook(root))
 
-
-# =====================================================
-# FOCUS / TAB GÖRÜNTÜLERİNİ KALDIRMA
-# =====================================================
-def _strip_focus_from_widget(widget):
-      """Widget ve çocuklarında focus highlight ve Tab ile gezinmeyi devre dışı bırak."""
-      try:
-            # Tk / Ttk çoğu widget'ta takefocus parametresi var
-            widget.configure(takefocus=0)
-      except Exception:
-            pass
-      # Bazı klasik Tk widget'larda highlight'ı sıfırlayabiliriz
-      for opt in ("highlightthickness", "highlightcolor", "highlightbackground"):
-            try:
-                  if opt == "highlightthickness":
-                        widget.configure(**{opt: 0})
-                  else:
-                        # Arka planla aynı yapmaya çalış
-                        bg = widget.cget("background") if "background" in widget.keys() else None
-                        if bg is not None:
-                              widget.configure(**{opt: bg})
-            except Exception:
-                  pass
-
-def _strip_focus_globally():
-      try:
-            _strip_focus_from_widget(root)
-            for w in root.winfo_children():
-                  _strip_focus_from_widget(w)
-                  # Toplevel / Frame gibi ise alt çocukları da dolaş
-                  try:
-                        for c in w.winfo_children():
-                              _strip_focus_from_widget(c)
-                              try:
-                                    for c2 in c.winfo_children():
-                                         _strip_focus_from_widget(c2)
-                              except Exception:
-                                    pass
-                  except Exception:
-                        pass
-      except Exception:
-            pass
-      # Yeni açılan pencereler (settings vs) için periyodik tekrar
-      root.after(1000, _strip_focus_globally)
 
 # Tab ve Shift+Tab ile focus taşımayı tamamen engelle
 def _block_tab(event):
@@ -3562,7 +3501,7 @@ root.bind_all("<ISO_Left_Tab>", _block_tab)
 root.bind_all("<Shift-Tab>", _block_tab)
 
 # Başlangıçta focus temizleyiciyi devreye al
-root.after(300, _strip_focus_globally)
+root.after(300, lambda: strip_focus_globally(root))
 
 # Splash kapat — ANA PENCEREYİ MAKSİMİZE ET ve göster
 maximize_main_window(root, prefer_kiosk=False)
@@ -3623,16 +3562,6 @@ root.after_idle(lambda: _position_search_frame() if settings_state.get("activate
 # =============================================================================
 # BOX SELECTION (KUTU SEÇİMİ) & MULTI-SELECT SİSTEMİ
 # =============================================================================
-
-# Seçim durumu ve değişkenleri
-selection_state = {
-      "active": False,
-      "start_pos": None,
-      "rect": None,
-      "selected_keys": set(),
-      "highlight_artists": [],
-      "background": None   # <--- YENİ: Arka planı hafızada tutmak için
-}
 
 def clear_selection_visuals():
       """Seçim efektlerini temizler."""

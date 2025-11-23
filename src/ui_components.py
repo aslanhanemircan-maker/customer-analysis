@@ -242,3 +242,60 @@ def get_banner_text(settings_state):
         
     separator = "      |      "
     return separator.join(active_items)
+
+def strip_focus_from_widget(widget):
+    """
+    Tek bir widget ve çocuklarında focus highlight ve Tab ile gezinmeyi devre dışı bırakır.
+    """
+    try:
+        # Tk / Ttk çoğu widget'ta takefocus parametresi var
+        widget.configure(takefocus=0)
+    except Exception:
+        pass
+    
+    # Bazı klasik Tk widget'larda highlight'ı sıfırlayabiliriz
+    for opt in ("highlightthickness", "highlightcolor", "highlightbackground"):
+        try:
+            if opt == "highlightthickness":
+                widget.configure(**{opt: 0})
+            else:
+                # Arka planla aynı yapmaya çalış
+                bg = widget.cget("background") if "background" in widget.keys() else None
+                if bg is not None:
+                    widget.configure(**{opt: bg})
+        except Exception:
+            pass
+
+def strip_focus_globally(root_widget, interval_ms=1000):
+    """
+    Tüm arayüzdeki widget'lardan focus özelliğini temizler ve kendini periyodik olarak çağırır.
+    Böylece sonradan eklenen widget'lar (örn: Settings penceresi) da temizlenir.
+    """
+    try:
+        strip_focus_from_widget(root_widget)
+        
+        # Tüm çocukları (children) recursive gez
+        # winfo_children() sadece doğrudan çocukları verir, recursive değildir.
+        # O yüzden bir kuyruk (queue) mantığı veya recursive fonksiyon gerekir.
+        # Ancak basitçe ana pencereleri ve çocuklarını gezmek çoğu zaman yeterlidir.
+        
+        # Basit bir Breadth-First Search (BFS) ile tüm ağacı gezelim
+        queue = [root_widget]
+        while queue:
+            current = queue.pop(0)
+            strip_focus_from_widget(current)
+            
+            # Varsa çocuklarını kuyruğa ekle
+            try:
+                children = current.winfo_children()
+                if children:
+                    queue.extend(children)
+            except Exception:
+                pass
+                
+    except Exception:
+        pass
+        
+    # Kendini tekrar çağır (Sürekli temizlik için)
+    if interval_ms > 0:
+        root_widget.after(interval_ms, lambda: strip_focus_globally(root_widget, interval_ms))
