@@ -13,7 +13,7 @@ except Exception:
       DateEntry = None
       _HAS_TKCALENDAR = False   # Yüklü değilse fallback olarak Entry kullanılacak
       
-from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL, get_point_key, get_limit_removed_keys, is_risk_allowed, apply_churn_filters, apply_age_filters, get_growth_source_col_for_age_mode, get_base_mrr_col_for_age_mode, get_exc_mrr_col_for_age_mode, is_risk_view_active, calculate_churn_stats
+from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL, get_point_key, get_limit_removed_keys, is_risk_allowed, apply_churn_filters, apply_age_filters, get_growth_source_col_for_age_mode, get_base_mrr_col_for_age_mode, get_exc_mrr_col_for_age_mode, is_risk_view_active, calculate_churn_stats, get_visible_customer_names, prepare_export_dataframe
 
 from analysis import calculate_kmeans_labels, calculate_pareto_mask, calculate_regression_line
 from utils import (
@@ -824,216 +824,6 @@ def _load_excel_icon():
 
 _load_excel_icon()
 
-def _gather_current_view_dataframe(only_selected=False):
-      """
-      Mevcut grafikte görünen veriyi DataFrame olarak hazırlar.
-      only_selected=True ise SADECE 'selection_state' içindeki noktaları filtreler.
-      """
-      x_col = get_plot_x_col()
-       
-      # 1. Gizli noktaları filtrele
-      hidden = set().union(manual_removed, license_removed, get_limit_removed_keys(df, settings_state))
-      base_df = df[~df.apply(lambda r: get_point_key(r, settings_state) in hidden, axis=1)].copy()
-
-      # 2. Temel filtreler (Churn, Age)
-      base_df = apply_churn_filters(base_df, settings_state)
-      base_df = apply_age_filters(base_df, settings_state)
-       
-      # 3. Kolon ayarlamaları
-      age_growth_col = get_growth_source_col_for_age_mode(settings_state, df.columns)
-      if age_growth_col in base_df.columns:
-            base_df['MRR Growth (%)'] = base_df[age_growth_col].astype(float) * 100.0
-
-      age_base_mrr_col = get_base_mrr_col_for_age_mode(settings_state, df.columns)
-      if age_base_mrr_col in base_df.columns:
-            base_df[EFFECTIVE_MRR_COL] = base_df[age_base_mrr_col].astype(float)
-
-      if (CHURN_COL in base_df.columns) and (CHURNED_MRR_COL in base_df.columns):
-            churn_mask_loc = base_df[CHURN_COL].astype(str).str.upper().eq("CHURN")
-            base_df.loc[churn_mask_loc, EFFECTIVE_MRR_COL] = base_df.loc[churn_mask_loc, CHURNED_MRR_COL].astype(float)
-
-      exc_col_src = get_exc_mrr_col_for_age_mode(settings_state)
-      if exc_col_src in base_df.columns:
-            base_df['Exc. License MRR'] = base_df[exc_col_src].astype(float)
-       
-      # 4. Regresyon filtresi
-      base_df = _apply_regression_filter(base_df, x_col)
-
-      # ---------------------------------------------------------
-      # [YENİ] SEÇİM FİLTRESİ (NORMAL MÜŞTERİLER İÇİN ÖN HAZIRLIK)
-      # ---------------------------------------------------------
-      if only_selected and sector_combobox.get() != "Sector Avg":
-            # Normal modda seçimler get_point_key(row, settings_state) (tuple) olarak tutulur.
-            # Sadece bu key'e sahip satırları tut.
-            target_keys = selection_state.get("selected_keys", set())
-            if not target_keys:
-                  # Seçim yoksa boş dataframe döndür
-                  return pd.DataFrame()
-             
-            # Apply ile kontrol (biraz yavaş olabilir ama güvenlidir)
-            base_df = base_df[base_df.apply(lambda r: get_point_key(r, settings_state) in target_keys, axis=1)]
-
-      selected_sector = sector_combobox.get()
-
-      # MERKEZ HESAPLAMA
-      if settings_state.get("fixed_axis", False) and settings_state.get("fixed_center") is not None:
-            eff_center_x, eff_center_y = settings_state["fixed_center"]
-      else:
-            if len(base_df) > 0:
-                  eff_center_x = base_df[x_col].astype(float).mean()
-                  eff_center_y = base_df['MRR Growth (%)'].astype(float).mean()
-            else:
-                  eff_center_x = 0
-                  eff_center_y = 0
-       
-      plot_cx, plot_cy = to_plot_coords(eff_center_x, eff_center_y, settings_state.get("swap_axes", False))
-
-      # --- SENARYO A: SECTOR AVG SEÇİLİYSE ---
-      if selected_sector == "Sector Avg":
-            summary_rows = []
-            target_keys = selection_state.get("selected_keys", set())
-
-            for sector in sectors:
-                  # Eğer sadece seçililer isteniyorsa ve bu sektör seçili değilse atla
-                  # Sector Avg modunda keyler "SEC_AVG|Teknoloji" formatındadır.
-                  if only_selected:
-                        sec_key = f"SEC_AVG|{sector}"
-                        if sec_key not in target_keys:
-                              continue
-
-                  sec_df = base_df[base_df['Company Sector'] == sector]
-                  if len(sec_df) == 0:
-                        continue
-                   
-                  count = len(sec_df)
-                  try:
-                        avg_mrr = sec_df[x_col].astype(float).mean()
-                  except:
-                        avg_mrr = sec_df[EFFECTIVE_MRR_COL].astype(float).mean()
-                         
-                  avg_growth = sec_df['MRR Growth (%)'].astype(float).mean()
-                  total_mrr = sec_df[EFFECTIVE_MRR_COL].astype(float).sum()
-                   
-                  px, py = to_plot_coords(avg_mrr, avg_growth, settings_state.get("swap_axes", False))
-                   
-                  if px >= plot_cx and py >= plot_cy:     q_str = "(+,+)"
-                  elif px < plot_cx and py >= plot_cy:   q_str = "(-,+)"
-                  elif px < plot_cx and py < plot_cy:     q_str = "(-,-)"
-                  else:                                                  q_str = "(+,-)"
-
-                  summary_rows.append({
-                        "Company Sector": sector,
-                        "Customer Count": count,
-                        "Average MRR": avg_mrr,
-                        "Average Growth (%)": avg_growth,
-                        "Total MRR": total_mrr,
-                        "Quadrant": q_str
-                  })
-                   
-            return pd.DataFrame(summary_rows)
-
-      # --- SENARYO B: NORMAL MÜŞTERİ LİSTESİ EXPORT ---
-      # base_df yukarıda zaten only_selected'a göre filtrelendi.
-       
-      if selected_sector != "All":
-            base_df = base_df[base_df['Company Sector'] == selected_sector]
-       
-      # Risk filtresi (Export için)
-      if is_risk_view_active(selected_sector, df.columns, settings_state) and (RISK_COL in base_df.columns):
-            base_df = base_df[base_df[RISK_COL].astype(str).str.upper().apply(lambda val: is_risk_allowed(val, settings_state))]
-
-      # Çıktı DataFrame'i
-      out = pd.DataFrame()
-      if 'Customer' in base_df.columns:
-            out['Customer'] = base_df['Customer']
-      out['Company Sector'] = base_df['Company Sector']
-      out['MRR Value'] = base_df[x_col].astype(float)
-      out['MRR Growth (%)'] = base_df['MRR Growth (%)'].astype(float)
-       
-      if 'License Percent' in base_df.columns:
-            out['License Percent'] = base_df['License Percent']
-
-      if CHURN_COL in base_df.columns:
-            out[CHURN_COL] = base_df[CHURN_COL]
-      if CHURNED_MRR_COL in base_df.columns:
-            out[CHURNED_MRR_COL] = base_df[CHURNED_MRR_COL]
-      if RISK_COL in base_df.columns:
-            out[RISK_COL] = base_df[RISK_COL]
-
-      # Quadrant Hesapla
-      qs = []
-      for xv, yv in zip(out['MRR Value'].values, out['MRR Growth (%)'].values):
-            px, py = to_plot_coords(float(xv), float(yv), settings_state.get("swap_axes", False))
-            if px >= plot_cx and py >= plot_cy:     qs.append("(+,+)")
-            elif px < plot_cx and py >= plot_cy:   qs.append("(-,+)")
-            elif px < plot_cx and py < plot_cy:     qs.append("(-,-)")
-            else:                                                  qs.append("(+,-)")
-      out['Quadrant'] = qs
-       
-      return out
-
-      # Risk show/hide uygulanacak mı?
-      def _risk_allowed(risk_val: str) -> bool:
-            risk_val = (str(risk_val or "")).strip().upper()
-            if risk_val == "NO RISK":        return settings_state.get("risk_show_no", True)
-            if risk_val == "LOW RISK":      return settings_state.get("risk_show_low", True)
-            if risk_val == "MEDIUM RISK": return settings_state.get("risk_show_med", True)
-            if risk_val == "HIGH RISK":     return settings_state.get("risk_show_high", True)
-            if risk_val == "BOOKED CHURN":   return settings_state.get("risk_show_booked", True)
-            return True
-
-      if selected_sector not in ("All", "Sector Avg"):
-            base_df = base_df[base_df['Company Sector'] == selected_sector]
-            if is_risk_view_active(selected_sector) and (RISK_COL in base_df.columns):
-                  base_df = base_df[base_df[RISK_COL].astype(str).str.upper().apply(_risk_allowed)]
-
-      # YENİ: Regresyon filtresini uygula
-      base_df = _apply_regression_filter(base_df, x_col)
-
-      # Merkez (aynı mantık)
-      if settings_state.get("fixed_axis", False) and settings_state.get("fixed_center") is not None:
-            eff_center_x, eff_center_y = settings_state["fixed_center"]
-      else:
-            if len(base_df) > 0:
-                  eff_center_x = base_df[x_col].astype(float).mean()
-                  eff_center_y = base_df['MRR Growth (%)'].astype(float).mean()
-            else:
-                  eff_center_x = df[x_col].astype(float).mean()
-                  eff_center_y = df['MRR Growth (%)'].astype(float).mean()
-
-      plot_cx, plot_cy = to_plot_coords(eff_center_x, eff_center_y, settings_state.get("swap_axes", False))
-
-      # Çıktı sütunlarını hazırla
-      out = pd.DataFrame()
-      if 'Customer' in base_df.columns:
-            out['Customer'] = base_df['Customer']
-      out['Company Sector'] = base_df['Company Sector']
-      out['MRR Value'] = base_df[x_col].astype(float)
-      out['MRR Growth (%)'] = base_df['MRR Growth (%)'].astype(float)
-      if 'License Percent' in base_df.columns:
-            out['License Percent'] = base_df['License Percent']
-
-      # ======================= NEW/CHURN: export'a churn bilgisini de ekle =======================
-      if CHURN_COL in base_df.columns:
-            out[CHURN_COL] = base_df[CHURN_COL]
-      if CHURNED_MRR_COL in base_df.columns:
-            out[CHURNED_MRR_COL] = base_df[CHURNED_MRR_COL]
-      # ==========================================================================================
-
-      if RISK_COL in base_df.columns:
-            out[RISK_COL] = base_df[RISK_COL]
-
-      # Quadrant (plot koordinatlarına göre)
-      qs = []
-      for xv, yv in zip(out['MRR Value'].values, out['MRR Growth (%)'].values):
-            px, py = to_plot_coords(float(xv), float(yv), settings_state.get("swap_axes", False))
-            if px >= plot_cx and py >= plot_cy:     qs.append("(+,+)")
-            elif px < plot_cx and py >= plot_cy:   qs.append("(-,+)")
-            elif px < plot_cx and py < plot_cy:     qs.append("(-,-)")
-            else:                                                  qs.append("(+,-)")
-      out['Quadrant'] = qs
-      return out
-
 def _export_to_excel():
       """ Save As diyalogu açar, seçim varsa kullanıcıya sorar. """
        
@@ -1070,7 +860,23 @@ def _export_to_excel():
       try:
             # 3. Veriyi topla (only_selected parametresini kullanarak)
             is_selected_only = (export_mode == "selected")
-            data = _gather_current_view_dataframe(only_selected=is_selected_only)
+            # Gizli anahtarları topla
+            current_hidden = set().union(
+                manual_removed, 
+                license_removed, 
+                get_limit_removed_keys(df, settings_state)
+            )
+            current_hidden = current_hidden.union(regression_removed)
+            
+            # Yeni fonksiyonu çağır
+            data = prepare_export_dataframe(
+                df, 
+                settings_state, 
+                current_hidden, 
+                sector_combobox.get(), 
+                selection_state.get("selected_keys", set()), 
+                only_selected=is_selected_only
+            )
 
             if data.empty:
                   tk.messagebox.showwarning("Uyarı", "Dışa aktarılacak veri bulunamadı.")
@@ -1234,58 +1040,23 @@ def _update_search_list(prefix: str):
       except Exception:
             pass
 
-      names = _visible_customer_names_starting_with(prefix)
+      current_hidden = set().union(
+          manual_removed,
+          license_removed,
+          get_limit_removed_keys(df, settings_state)
+      )
+      names = get_visible_customer_names(
+          df,
+          settings_state,
+          sector_combobox.get(),
+          current_hidden,
+          prefix
+      )    
       for name in names[:50]:
             search_list.insert(tk.END, name)
 
       count = search_list.size()
       search_info.config(text=f"{count} match")
-
-
-def _visible_customer_names_starting_with(prefix_cf: str):
-      """
-      Arama kutusu için aday listesi oluşturur.
-      - Sector Avg modu: Sektör isimlerini ("Technology Avg" gibi) döndürür.
-      - Diğer modlar: Görünür müşteri isimlerini döndürür.
-      """
-      current_mode = sector_combobox.get()
-       
-      # --- SENARYO 1: SECTOR AVG MODU ---
-      if current_mode == "Sector Avg":
-            # Sadece ekranda var olan (verisi olan) sektörleri bul
-            # sectors değişkeni globalde zaten var ama boş sektörleri elemek için
-            # visible_df mantığına bakabiliriz veya direkt 'sectors' listesini kullanabiliriz.
-             
-            candidates = []
-            for sec in sectors:
-                  # Sadece verisi olan sektörleri listeye ekle (opsiyonel optimizasyon)
-                  if not df[df['Company Sector'] == sec].empty:
-                        candidates.append(f"{sec} Avg")
-             
-            # Filtrele ve döndür
-            return [c for c in candidates if tr_lower(c).startswith(prefix_cf)]
-
-      # --- SENARYO 2: MÜŞTERİ ARAMA MODU (ESKİ MANTIK) ---
-      hidden = set().union(manual_removed, license_removed, get_limit_removed_keys(df, settings_state))
-       
-      # visible_df oluştur (filtrelenmiş veri)
-      vis_df = df[~df.apply(lambda r: get_point_key(r, settings_state) in hidden, axis=1)].copy()
-
-      vis_df = apply_churn_filters(vis_df, settings_state)
-      vis_df = apply_age_filters(vis_df, settings_state)
-      vis_df = _apply_regression_filter(vis_df, get_plot_x_col())
-
-      if current_mode not in ("All", "Sector Avg"):
-            vis_df = vis_df[vis_df['Company Sector'] == current_mode]
-            if is_risk_view_active(current_mode, df.columns, settings_state) and (RISK_COL in vis_df.columns):
-                    vis_df = vis_df[vis_df[RISK_COL].astype(str).str.upper().apply(lambda val: is_risk_allowed(val, settings_state))]
-
-      if 'Customer' not in vis_df.columns:
-            return []
-       
-      names = vis_df['Customer'].dropna().astype(str)
-      return [n for n in names if tr_lower(n).startswith(prefix_cf)]
-
 
 def _highlight_matches(prefix: str):
       _clear_highlight_overlays()
