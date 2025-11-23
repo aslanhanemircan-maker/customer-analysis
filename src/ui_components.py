@@ -131,3 +131,57 @@ def create_collapsible_stat_card(parent, title_bg="#f0f0f0"):
     btn_toggle.bind("<Button-1>", toggle)
     
     return card_frame, lbl_count, lbl_mrr, txt_list
+
+def ask_export_scope(parent, count):
+    """
+    Kullanıcıya 'Sadece Seçililer mi?' yoksa 'Tümü mü?' diye soran şık bir popup.
+    Geri dönüş: 'selected', 'all' veya None (iptal).
+    """
+    dialog = tk.Toplevel(parent)
+    dialog.title("Export Options")
+    dialog.transient(parent)
+    dialog.grab_set()
+    
+    # Pencereyi ortala (Bu dosyadaki fonksiyonu kullanıyoruz)
+    center_over_parent(dialog, parent, 380, 160)
+    
+    # Sonuç değişkeni
+    result = [None]  
+
+    # İkon ve Mesaj
+    msg_frame = tk.Frame(dialog, bg="#f0f0f0", pady=15)
+    msg_frame.pack(fill="x")
+    
+    lbl_icon = tk.Label(msg_frame, text="📤", font=("Segoe UI", 24), bg="#f0f0f0")
+    lbl_icon.pack(side="left", padx=(20, 10))
+    
+    lbl_text = tk.Label(msg_frame,  
+                        text=f"{count} adet seçiminiz var.\nNasıl dışa aktarmak istersiniz?",  
+                        font=("Segoe UI", 10), bg="#f0f0f0", justify="left")
+    lbl_text.pack(side="left")
+
+    # Butonlar
+    btn_frame = tk.Frame(dialog, pady=10)
+    btn_frame.pack(fill="x", side="bottom")
+
+    def set_res(val):
+        result[0] = val
+        dialog.destroy()
+
+    # Stilize Butonlar
+    style = ttk.Style()
+    try:
+        style.configure("ExpDialog.TButton", font=("Segoe UI", 9))
+    except: pass
+
+    btn_sel = ttk.Button(btn_frame, text="Sadece Seçililer", style="ExpDialog.TButton", width=16,
+                         command=lambda: set_res("selected"))
+    btn_sel.pack(side="right", padx=10)
+    
+    btn_all = ttk.Button(btn_frame, text="Tüm Görünenler", style="ExpDialog.TButton", width=16,
+                         command=lambda: set_res("all"))
+    btn_all.pack(side="right", padx=10)
+
+    # Pencere kapanana kadar bekle
+    parent.wait_window(dialog)
+    return result[0]

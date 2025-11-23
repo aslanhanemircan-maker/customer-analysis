@@ -12,7 +12,7 @@ except Exception:
       DateEntry = None
       _HAS_TKCALENDAR = False   # Yüklü değilse fallback olarak Entry kullanılacak
       
-from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL, get_point_key, get_limit_removed_keys
+from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL, get_point_key, get_limit_removed_keys, is_risk_allowed
 from analysis import calculate_kmeans_labels, calculate_pareto_mask, calculate_regression_line
 from utils import (
     external_resource_path, 
@@ -23,13 +23,15 @@ from utils import (
     center_on_screen,
     parse_number_entry,
     parse_optional_number,
-    validate_float
+    validate_float,
+    maximize_main_window
 )
 
 from ui_components import (
     set_tooltip, 
     create_collapsible_stat_card, 
-    center_over_parent
+    center_over_parent,
+    ask_export_scope
 )
 
 CHURN_X_COLOR = 'red' 
@@ -163,19 +165,6 @@ settings_state = {
       "fixed_regression_params": None,      # Sabitlenen m ve b değerlerini tutacak sözlük
 }
 
-def _risk_allowed(risk_val: str) -> bool:
-    """
-    Bir müşterinin risk durumuna göre gösterilip gösterilmeyeceğine karar verir.
-    Global settings_state sözlüğünü kullanır.
-    """
-    risk_val = (str(risk_val or "")).strip().upper()
-    if risk_val == "NO RISK":        return settings_state.get("risk_show_no", True)
-    if risk_val == "LOW RISK":       return settings_state.get("risk_show_low", True)
-    if risk_val == "MEDIUM RISK":    return settings_state.get("risk_show_med", True)
-    if risk_val == "HIGH RISK":      return settings_state.get("risk_show_high", True)
-    if risk_val == "BOOKED CHURN":   return settings_state.get("risk_show_booked", True)
-    return True
-
 # ========================== Ana Uygulama (Lazy Import ile) ==========================
 # 1) Uygulama başında DPI awareness (OS bitmap scaling kapansın)
 enable_per_monitor_dpi_awareness()
@@ -298,29 +287,6 @@ def is_risk_view_active(selected_sector: str) -> bool:
 # Ana pencere özellikleri
 root.title("MRR Growth Analitik Düzlem")
 root.geometry("1600x900")   # başlangıç boyutu (hemen sonra maksimize edeceğiz)
-
-# Standart full screen (maksimize)
-def maximize_main_window(win, prefer_kiosk=False):
-      try:
-            if prefer_kiosk:
-                  win.attributes("-fullscreen", True)
-                  win.bind("<Escape>", lambda e: win.attributes("-fullscreen", False))
-                  return
-            win.state("zoomed")   # Windows
-            return
-      except Exception:
-            pass
-      try:
-            win.attributes("-zoomed", True)   # bazı Linux
-            return
-      except Exception:
-            pass
-      try:
-            sw = win.winfo_screenwidth()
-            sh = win.winfo_screenheight()
-            win.geometry(f"{sw}x{sh}+0+0")
-      except Exception:
-            pass
 
 root.grid_rowconfigure(0, weight=1)
 root.grid_columnconfigure(0, weight=1)   # sol: grafik
@@ -972,7 +938,7 @@ def _gather_current_view_dataframe(only_selected=False):
                   return pd.DataFrame()
              
             # Apply ile kontrol (biraz yavaş olabilir ama güvenlidir)
-            base_df = base_df[base_df.apply(lambda r: get_point_key(r, settings_state)(r) in target_keys, axis=1)]
+            base_df = base_df[base_df.apply(lambda r: get_point_key(r, settings_state) in target_keys, axis=1)]
 
       selected_sector = sector_combobox.get()
 
@@ -1041,15 +1007,7 @@ def _gather_current_view_dataframe(only_selected=False):
        
       # Risk filtresi (Export için)
       if is_risk_view_active(selected_sector) and (RISK_COL in base_df.columns):
-            def _risk_allowed_export(risk_val):
-                  rv = (str(risk_val or "")).strip().upper()
-                  if rv == "NO RISK":           return settings_state.get("risk_show_no", True)
-                  if rv == "LOW RISK":         return settings_state.get("risk_show_low", True)
-                  if rv == "MEDIUM RISK":     return settings_state.get("risk_show_med", True)
-                  if rv == "HIGH RISK":        return settings_state.get("risk_show_high", True)
-                  if rv == "BOOKED CHURN":   return settings_state.get("risk_show_booked", True)
-                  return True
-            base_df = base_df[base_df[RISK_COL].astype(str).str.upper().apply(_risk_allowed_export)]
+            base_df = base_df[base_df[RISK_COL].astype(str).str.upper().apply(lambda val: is_risk_allowed(val, settings_state))]
 
       # Çıktı DataFrame'i
       out = pd.DataFrame()
@@ -1143,62 +1101,6 @@ def _gather_current_view_dataframe(only_selected=False):
       out['Quadrant'] = qs
       return out
 
-
-
-def _ask_export_scope(count):
-      """
-      Kullanıcıya 'Sadece Seçililer mi?' yoksa 'Tümü mü?' diye soran şık bir popup.
-      Geri dönüş: 'selected', 'all' veya None (iptal).
-      """
-      dialog = tk.Toplevel(root)
-      dialog.title("Export Options")
-      dialog.transient(root)
-      dialog.grab_set()
-       
-      # Pencereyi ortala
-      w, h = 380, 160
-      center_over_parent(dialog, root, w, h)
-       
-      # Sonuç değişkeni (mutable list hilesi ile veri taşıma)
-      result = [None]  
-
-      # İkon ve Mesaj
-      msg_frame = tk.Frame(dialog, bg="#f0f0f0", pady=15)
-      msg_frame.pack(fill="x")
-       
-      lbl_icon = tk.Label(msg_frame, text="📤", font=("Segoe UI", 24), bg="#f0f0f0")
-      lbl_icon.pack(side="left", padx=(20, 10))
-       
-      lbl_text = tk.Label(msg_frame,  
-                                    text=f"{count} adet seçiminiz var.\nNasıl dışa aktarmak istersiniz?",  
-                                    font=("Segoe UI", 10), bg="#f0f0f0", justify="left")
-      lbl_text.pack(side="left")
-
-      # Butonlar
-      btn_frame = tk.Frame(dialog, pady=10)
-      btn_frame.pack(fill="x", side="bottom")
-
-      def set_res(val):
-            result[0] = val
-            dialog.destroy()
-
-      # Stilize Butonlar
-      style = ttk.Style()
-      style.configure("ExpDialog.TButton", font=("Segoe UI", 9))
-
-      btn_sel = ttk.Button(btn_frame, text="Sadece Seçililer", style="ExpDialog.TButton", width=16,
-                                      command=lambda: set_res("selected"))
-      btn_sel.pack(side="right", padx=10)
-       
-      btn_all = ttk.Button(btn_frame, text="Tüm Görünenler", style="ExpDialog.TButton", width=16,
-                                      command=lambda: set_res("all"))
-      btn_all.pack(side="right", padx=10)
-
-      # Pencere kapanana kadar bekle
-      root.wait_window(dialog)
-      return result[0]
-
-
 def _export_to_excel():
       """ Save As diyalogu açar, seçim varsa kullanıcıya sorar. """
        
@@ -1208,7 +1110,7 @@ def _export_to_excel():
 
       if selected_count > 0:
             # Seçim varsa kullanıcıya sor
-            user_choice = _ask_export_scope(selected_count)
+            user_choice = ask_export_scope(root, selected_count)
             if user_choice is None:
                   return # İptal etti veya pencereyi kapattı
             export_mode = user_choice
@@ -1332,17 +1234,31 @@ search_frame.grid_columnconfigure(2, weight=1)
 
 highlight_overlay_artists = []   # vurgulama overlay scatter’ları
 def _position_search_frame():
-      try:
-            root.update_idletasks()
-            ex = excel_btn.winfo_x()
-            ew = excel_btn.winfo_width()
-            ey = excel_btn.winfo_y()
-            sx = ex + ew + 8
-            sy = ey - 2
-            search_frame.place(x=sx, y=sy)
-            search_frame.lift()
-      except Exception:
-            search_frame.place(x=SETTINGS_BTN_X + 220, y=SETTINGS_BTN_Y)
+    """Arama çubuğunu Handbook butonunun sağına konumlandırır."""
+    try:
+        root.update_idletasks()
+        # Handbook butonunun konumunu ve genişliğini al
+        hx = handbook_btn.winfo_x()
+        hw = handbook_btn.winfo_width()
+        hy = handbook_btn.winfo_y()
+        
+        # Eğer buton henüz çizilmediyse (width=1 gelirse) varsayılan bir yer ver
+        if hw < 5: 
+            hw = 90
+            hx = SETTINGS_BTN_X + 200 # Tahmini bir yer
+            
+        # Handbook'un 12 piksel sağına koy
+        sx = hx + hw + 12
+        
+        # Dikey hizalama (Butonlarla aynı hizada olması için hafif ayar gerekebilir)
+        # Genelde butonlar biraz yüksek olduğu için search_frame'i 2-3 piksel yukarı/aşağı oynatabilirsin.
+        sy = hy 
+        
+        search_frame.place(x=sx, y=sy)
+        search_frame.lift()
+    except Exception:
+        # Hata olursa güvenli bir yere koy
+        search_frame.place(x=450, y=SETTINGS_BTN_Y)
 
 
 def toggle_search_bar_visibility():
@@ -1420,7 +1336,7 @@ def _visible_customer_names_starting_with(prefix_cf: str):
       hidden = set().union(manual_removed, license_removed, get_limit_removed_keys(df, settings_state))
        
       # visible_df oluştur (filtrelenmiş veri)
-      vis_df = df[~df.apply(lambda r: get_point_key(r, settings_state)(r) in hidden, axis=1)].copy()
+      vis_df = df[~df.apply(lambda r: get_point_key(r, settings_state) in hidden, axis=1)].copy()
 
       vis_df = _apply_churn_filters(vis_df)
       vis_df = _apply_age_filters(vis_df)
@@ -1429,16 +1345,7 @@ def _visible_customer_names_starting_with(prefix_cf: str):
       if current_mode not in ("All", "Sector Avg"):
             vis_df = vis_df[vis_df['Company Sector'] == current_mode]
             if is_risk_view_active(current_mode) and (RISK_COL in vis_df.columns):
-                    # Risk filtresi mantığı (Helper içinden veya direkt buraya)
-                    def _risk_allowed_search(risk_val):
-                        rv = (str(risk_val or "")).strip().upper()
-                        if rv == "NO RISK":         return settings_state.get("risk_show_no", True)
-                        if rv == "LOW RISK":        return settings_state.get("risk_show_low", True)
-                        if rv == "MEDIUM RISK":   return settings_state.get("risk_show_med", True)
-                        if rv == "HIGH RISK":      return settings_state.get("risk_show_high", True)
-                        if rv == "BOOKED CHURN": return settings_state.get("risk_show_booked", True)
-                        return True
-                    vis_df = vis_df[vis_df[RISK_COL].astype(str).str.upper().apply(_risk_allowed_search)]
+                    vis_df = vis_df[vis_df[RISK_COL].astype(str).str.upper().apply(lambda val: is_risk_allowed(val, settings_state))]
 
       if 'Customer' not in vis_df.columns:
             return []
@@ -2494,7 +2401,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
             
             # Risk filtresi varsa uygula
             if is_risk_view_active(selected_sector) and (RISK_COL in temp_df_for_line.columns):
-                 temp_df_for_line = temp_df_for_line[temp_df_for_line[RISK_COL].astype(str).str.upper().apply(_risk_allowed)]
+                 temp_df_for_line = temp_df_for_line[temp_df_for_line[RISK_COL].astype(str).str.upper().apply(lambda val: is_risk_allowed(val, settings_state))]
     
             # --- YENİ: Hesabı 'analysis.py' içindeki fonksiyona yaptır ---
             res = calculate_regression_line(
@@ -4575,32 +4482,31 @@ handbook_btn = ttk.Button(root, text="📘 Handbook", command=open_handbook, sty
 # --- 2. Üst Bar Yerleşimini Düzenle ---
 # Settings -> Excel -> Handbook -> SearchBar sıralamasını garanti altına alan fonksiyon
 def _update_top_bar_layout():
-      try:
-            root.update_idletasks()
-             
-            # Referans: Settings butonu
-            # SETTINGS_BTN_X ve SETTINGS_BTN_Y global değişkenlerdir (kodun başında tanımlı)
-             
-            # 1. Excel Butonu (Settings'in sağına)
-            s_w = settings_btn.winfo_width()
-            if s_w < 10: s_w = 90 # Henüz çizilmediyse varsayılan
-             
-            excel_x = SETTINGS_BTN_X + s_w + 2
-            excel_btn.place(x=excel_x, y=SETTINGS_BTN_Y)
-             
-            # 2. Handbook Butonu (Excel'in sağına)
-            e_w = excel_btn.winfo_width()
-            if e_w < 10: e_w = 90
-                   
-            hb_x = excel_x + e_w + 2
-            handbook_btn.place(x=hb_x, y=SETTINGS_BTN_Y)
-             
-            # 3. Search Bar (Handbook'un sağına)
-            # _position_search_frame fonksiyonunu buradaki mantığa göre güncelleyeceğiz
-             
-      except Exception:
-            # Hata durumunda varsayılan
-            pass
+    """Üst bar yerleşimini soldan sağa zincirleme şekilde yapar."""
+    try:
+        root.update_idletasks()
+        
+        # 1. Settings Butonu (Zaten Yeri Sabit: SETTINGS_BTN_X)
+        s_w = settings_btn.winfo_width()
+        if s_w < 10: s_w = 90 
+        
+        # 2. Excel Butonu (Settings'in Sağına)
+        excel_x = SETTINGS_BTN_X + s_w + 4
+        excel_btn.place(x=excel_x, y=SETTINGS_BTN_Y)
+        
+        # 3. Handbook Butonu (Excel'in Sağına)
+        e_w = excel_btn.winfo_width()
+        if e_w < 10: e_w = 90
+            
+        hb_x = excel_x + e_w + 4
+        handbook_btn.place(x=hb_x, y=SETTINGS_BTN_Y)
+        
+        # 4. Arama Çubuğu (Eğer açıksa Handbook'un sağına)
+        if settings_state.get("activate_search_box", False):
+            _position_search_frame()
+            
+    except Exception:
+        pass
 
 # Mevcut _position_search_frame fonksiyonunu GÜNCELLİYORUZ (Override)
 # Bu fonksiyon orijinal kodda vardı, şimdi handbook'a göre hizalayacak şekilde değiştiriyoruz.

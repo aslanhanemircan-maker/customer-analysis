@@ -117,3 +117,19 @@ def get_limit_removed_keys(df, settings_state):
                 s.add(key)
                 
     return s  
+
+def is_risk_allowed(risk_val, settings_state):
+    """
+    Bir müşterinin risk durumuna göre gösterilip gösterilmeyeceğine karar verir.
+    """
+    # Gelen değer boşsa veya tanımsızsa string'e çevirip temizle
+    val = (str(risk_val or "")).strip().upper()
+    
+    if val == "NO RISK":        return settings_state.get("risk_show_no", True)
+    if val == "LOW RISK":       return settings_state.get("risk_show_low", True)
+    if val == "MEDIUM RISK":    return settings_state.get("risk_show_med", True)
+    if val == "HIGH RISK":      return settings_state.get("risk_show_high", True)
+    if val == "BOOKED CHURN":   return settings_state.get("risk_show_booked", True)
+    
+    # Tanımsız bir risk durumu varsa varsayılan olarak göster
+    return True

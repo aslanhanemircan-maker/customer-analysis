@@ -225,3 +225,26 @@ def validate_float(P: str) -> bool:
         return True
     # İzin verilen karakterler: Rakamlar ve ., -+
     return all(ch.isdigit() or ch in "., -+" for ch in P)
+
+def maximize_main_window(win, prefer_kiosk=False):
+    """Pencereyi işletim sistemine uygun şekilde tam ekran yapar."""
+    try:
+        if prefer_kiosk:
+            win.attributes("-fullscreen", True)
+            win.bind("<Escape>", lambda e: win.attributes("-fullscreen", False))
+            return
+        win.state("zoomed")   # Windows
+        return
+    except Exception:
+        pass
+    try:
+        win.attributes("-zoomed", True)   # Linux
+        return
+    except Exception:
+        pass
+    try:
+        sw = win.winfo_screenwidth()
+        sh = win.winfo_screenheight()
+        win.geometry(f"{sw}x{sh}+0+0")
+    except Exception:
+        pass
