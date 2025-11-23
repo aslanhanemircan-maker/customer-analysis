@@ -336,3 +336,21 @@ def compute_fit_limits(selected_sector, x_col, visible_df, sectors_list, pad_rat
     ypad = yspan * pad_ratio
     
     return (xmin - xpad, xmax + xpad, ymin - ypad, ymax + ypad)
+
+import matplotlib.legend as mlegend
+
+def remove_existing_legends(ax, legend_list):
+    """
+    Grafikteki eski legend'ları temizler ve takip listesini sıfırlar.
+    ax: Matplotlib axes nesnesi
+    legend_list: global active_legends listesi
+    """
+    # Matplotlib'in kendi çocuklarını (children) kontrol et
+    for child in list(ax.get_children()):
+        if isinstance(child, mlegend.Legend):
+            try:
+                child.remove()
+            except Exception:
+                pass
+    # Listeyi temizle
+    legend_list.clear()

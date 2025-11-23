@@ -28,7 +28,8 @@ from utils import (
     validate_float,
     maximize_main_window,
     to_plot_coords,
-    compute_fit_limits
+    compute_fit_limits,
+    remove_existing_legends
 )
 
 from ui_components import (
@@ -1709,18 +1710,6 @@ active_legends = []
 
 undo_stack = []
 
-# =====================================================
-# Yardımcılar
-# =====================================================
-def remove_existing_legends():
-      for child in list(ax.get_children()):
-            if isinstance(child, mlegend.Legend):
-                  try:
-                        child.remove()
-                  except Exception:
-                        pass
-      active_legends.clear()
-
 def _apply_regression_filter(df_in: pd.DataFrame, x_col: str) -> pd.DataFrame:
       """
       YENİ: Varsa, hesaplanmış regresyon çizgisine göre filtreler (above/below).
@@ -1824,13 +1813,12 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
             last_annotation = None
 
       ax.clear()
-      # --- YAMA BAŞLANGIÇ: Eski marjinal grafikleri temizle ---
+      #Eski marjinal grafikleri temizle
       for art in analytics_state["marginal_artists"]:
             try: art.remove()
             except: pass
       analytics_state["marginal_artists"].clear()
-      # --- YAMA BİTİŞ ---
-      remove_existing_legends()
+      remove_existing_legends(ax, active_legends)
       scatter_points.clear()
       _clear_highlight_overlays()   # yeni çizimde eski highlight overlaylerini temizle
 
