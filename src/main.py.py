@@ -40,6 +40,16 @@ from ui_components import (
     strip_focus_globally
 )
 
+from interactions import (
+    handle_scroll_event, 
+    handle_pan_press, 
+    handle_pan_release, 
+    handle_pan_motion,
+    handle_select_press,
+    handle_select_motion,
+    handle_select_release
+)
+
 CHURN_X_COLOR = 'red' 
 CHURN_DATE_COL = 'Churn Date'
 
@@ -2757,7 +2767,7 @@ def on_motion(event):
       """
        
       # 1. Seçim yapılıyorsa (kutu çizme) veya Sector Avg'da Pan yapılıyorsa gizle
-      if selection_state.get("active", False) or (pan_active and sector_combobox.get() == "Sector Avg"):
+      if selection_state.get("active", False) or (pan_state["active"] and sector_combobox.get() == "Sector Avg"):
             set_tooltip(None, 0, 0)
             return
 
@@ -3029,89 +3039,44 @@ def on_scroll(event):
 
 canvas.mpl_connect("scroll_event", on_scroll)
 
-pan_active = False
-pan_last = None
+pan_state = {
+    "active": False,
+    "last": None
+}
 
 def on_press(event):
-      global pan_active, pan_last
-       
-      # Bizim manuel Ctrl takipçimize bakıyoruz
-      is_ctrl = ctrl_state["pressed"]
+    # Ctrl durumu
+    is_ctrl = ctrl_state["pressed"]
+    
+    # Seçim varsa temizle (Görsel temizlik)
+    if selection_state["selected_keys"]:
+        selection_state["selected_keys"].clear()
+        clear_selection_visuals()
+        # draw_idle yapmıyoruz, pan başlayınca çizilir
 
-      # --- SENARYO 1: CTRL BASILIYSA ---
-      # Pan yapma, buradan çık (Meydan on_select_press'e kalsın)
-      if is_ctrl:
-            return
-
-      # --- SENARYO 2: SADECE SOL TIK (PAN & TEMİZLİK) ---
-      # 1. Eğer seçili müşteriler varsa hafızadan sil (AMA ÇİZME!)
-      if selection_state["selected_keys"]:
-            selection_state["selected_keys"].clear()
-            clear_selection_visuals()
-            # BURADA canvas.draw_idle() YAPMIYORUZ!  
-            # Çünkü yaparsak pan hareketiyle çakışıp kasma yapar.
-            # Bırakalım hareket başlayınca temiz haliyle çizilsin.
-
-      # 2. Pan (Kaydırma) modunu başlat
-      if event.button == 1 and event.inaxes == ax:
-            pan_active = True
-            pan_last = (event.x, event.y)
-             
-            # Performans için Legend'ları geçici gizle
-            if sector_combobox.get() == "Sector Avg" and active_legends:
-                  for lg in active_legends:
-                        try:
-                              lg.set_visible(False)
-                        except Exception:
-                              pass
-                  # Pan başlangıcında tek bir update yeterli
-                  # (Hemen hareket edecekseniz draw_idle'a gerek yok ama
-                  # duran tıklamalar için koyuyoruz, hareket başlayınca override olur)
-                  canvas.draw_idle()
+    # Interactions modülüne devret
+    started = handle_pan_press(event, pan_state, is_ctrl, False, ax)
+    
+    # Eğer pan başladıysa legendları gizle (Performans için)
+    if started and sector_combobox.get() == "Sector Avg" and active_legends:
+        for lg in active_legends:
+            try: lg.set_visible(False)
+            except: pass
+        canvas.draw_idle()
 def on_release(event):
-      global pan_active
-       
-      if not pan_active:
-            return
+    # Callback: Pan bitince yapılacaklar
+    def _refresh_after_pan():
+        # Sektör değişmediği için preserve_zoom=True, fit_to_data=False
+        update_plot(sector_combobox.get(), preserve_zoom=True, fit_to_data=False)
+        # Seçimleri tekrar boya
+        try: draw_selection_highlights()
+        except: pass
 
-      if event.button == 1:
-            pan_active = False
-            # Pan bitti, grafiği en temiz haliyle tekrar çiz
-            update_plot(sector_combobox.get(), preserve_zoom=True, fit_to_data=False)
-             
-            # --- DÜZELTME: Pan bittikten sonra seçili noktaları tekrar boya ---
-            draw_selection_highlights()
+    handle_pan_release(event, pan_state, _refresh_after_pan)
 
 def on_motion_pan(event):
-      global pan_last
-       
-      # Pan aktif değilse veya mouse eksen dışındaysa çık
-      if not (pan_active and pan_last and event.inaxes == ax):
-            return
-       
-      # Sürükleme esnasında sonradan CTRL'ye basılırsa durdur
-      if ctrl_state["pressed"]:
-            return
-
-      dx_pixels = event.x - pan_last[0]
-      dy_pixels = event.y - pan_last[1]
-      pan_last = (event.x, event.y)
-
-      x0_l, x1_l = ax.get_xlim()
-      y0_l, y1_l = ax.get_ylim()
-      x_range = (x1_l - x0_l)
-      y_range = (y1_l - y0_l)
-
-      w = max(1, canvas_widget.winfo_width())
-      h = max(1, canvas_widget.winfo_height())
-       
-      dx = -dx_pixels / w * x_range
-      dy = -dy_pixels / h * y_range
-
-      ax.set_xlim(x0_l + dx, x1_l + dx)
-      ax.set_ylim(y0_l + dy, y1_l + dy)
-
-      canvas.draw_idle()
+    # Sürükleme işlemini interactions modülüne yaptır
+    handle_pan_motion(event, pan_state, ax, canvas, ctrl_state["pressed"])
 
 canvas.mpl_connect("button_press_event", on_press)
 canvas.mpl_connect("button_release_event", on_release)
@@ -3651,248 +3616,37 @@ def draw_selection_highlights():
 # --- OPTİMİZE EDİLMİŞ EVENTLER ---
 
 def on_select_press(event):
-      """
-      Ctrl + Sol Tık: Seçimi başlatır.
-      ESTETİK GÜNCELLEME: Soluk sarı yerine modern mavi, yarı saydam kutu.
-      """
-       
-      is_ctrl = ctrl_state["pressed"]
-
-      if event.button != 1 or not is_ctrl:
-            return
-
-      if event.inaxes != ax or pan_active:
-            return
-
-      selection_state["active"] = True
-      selection_state["start_pos"] = (event.xdata, event.ydata)
-       
-      selection_state["background"] = None  
-
-      # Dikdörtgeni oluştur
-      if selection_state["rect"] is None:
-            rect = Rectangle(
-                  (event.xdata, event.ydata), 0, 0,  
-                  # --- ESTETİK AYARLAR ---
-                  linewidth=1.5,                     # Çerçeve kalınlığı (biraz daha belirgin)
-                  edgecolor='#1f77b4',            # Matplotlib'in modern mavisi (veya 'dodgerblue')
-                  facecolor=(0.12, 0.46, 0.7, 0.2), # İç dolgu rengi (RGB) + 0.2 Şeffaflık (Alpha)
-                  linestyle='-',                     # Kesik çizgi yerine düz çizgi (daha temiz durur)
-                  # -----------------------
-                  zorder=2000,  
-                  animated=True  
-            )
-            ax.add_patch(rect)
-            selection_state["rect"] = rect
-      else:
-            # Var olanı sıfırla
-            selection_state["rect"].set_xy((event.xdata, event.ydata))
-            selection_state["rect"].set_width(0)
-            selection_state["rect"].set_height(0)
-             
-            # Renk ayarlarını burada da güncelle (eski ayar kalmasın diye)
-            selection_state["rect"].set_linewidth(1.5)
-            selection_state["rect"].set_edgecolor('#1f77b4')
-            selection_state["rect"].set_facecolor((0.12, 0.46, 0.7, 0.2))
-            selection_state["rect"].set_linestyle('-')
-             
-            selection_state["rect"].set_visible(True)
-            selection_state["rect"].set_animated(True)
+    handle_select_press(
+        event, 
+        selection_state, 
+        pan_state["active"],  # <-- İşte burası! (pan_active değil, pan_state["active"])
+        ctrl_state["pressed"], 
+        ax
+    )
 
 def on_select_motion(event):
-      """
-      Sürükleme: Fare dışarı taşsa bile dikdörtgeni kenara yapıştırır (Clamping).
-      """
-      if not selection_state["active"] or selection_state["rect"] is None:
-            return
-
-      # --- DÜZELTME BAŞLANGIÇ ---
-      # Orijinal kodda "if event.inaxes != ax: return" vardı.  
-      # Bu, hızlı hareketlerde takılmaya neden oluyordu. Bunu sildik.
-
-      # 1. Farenin anlık koordinatlarını al
-      x_curr, y_curr = event.xdata, event.ydata
-
-      # 2. Eğer fare grafiğin tamamen dışındaysa (xdata None döner),
-      #      Piksel koordinatlarından (event.x, event.y) veriyi geri hesapla.
-      if x_curr is None or y_curr is None:
-            try:
-                  # Pixel -> Data dönüşümü
-                  inv = ax.transData.inverted()
-                  x_curr, y_curr = inv.transform((event.x, event.y))
-            except Exception:
-                  # Çok ekstrem bir hata olursa çık
-                  return
-
-      # 3. Koordinatları Grafik Sınırlarına Hapset (Clamping)
-      # Böylece fare monitörün diğer ucuna gitse bile kutu grafiğin kenarında biter.
-      x0_lim, x1_lim = ax.get_xlim()
-      y0_lim, y1_lim = ax.get_ylim()
-
-      # Sınırların hangisi küçük hangisi büyük emin olalım (ters eksen ihtimaline karşı)
-      x_min_lim, x_max_lim = sorted([x0_lim, x1_lim])
-      y_min_lim, y_max_lim = sorted([y0_lim, y1_lim])
-
-      # Değeri sınırlar içinde tut
-      x_curr = max(x_min_lim, min(x_curr, x_max_lim))
-      y_curr = max(y_min_lim, min(y_curr, y_max_lim))
-      # --- DÜZELTME BİTİŞ ---
-
-      # --- Lazy Copy Mantığı (Aynen kalıyor) ---
-      if selection_state["background"] is None:
-            canvas.draw()
-            selection_state["background"] = canvas.copy_from_bbox(ax.bbox)
-            ax.draw_artist(selection_state["rect"])
-
-      canvas.restore_region(selection_state["background"])
-
-      # 4. Dikdörtgeni güncelle
-      x0, y0 = selection_state["start_pos"]
-       
-      width = x_curr - x0
-      height = y_curr - y0
-
-      selection_state["rect"].set_width(width)
-      selection_state["rect"].set_height(height)
-      selection_state["rect"].set_xy((x0, y0))
-
-      ax.draw_artist(selection_state["rect"])
-      canvas.blit(ax.bbox)
+    handle_select_motion(event, selection_state, ax, canvas)
 
 def on_select_release(event):
-      """Tık bırakma: Seçimi tamamla (Dışarıda bırakılsa bile hata vermez)."""
-       
-      if not selection_state["active"]:
-            return
-
-      # 1. Görsel Temizlik
-      if selection_state["rect"]:
-            selection_state["rect"].set_visible(False)
-            selection_state["rect"].set_animated(False)
-       
-      selection_state["active"] = False
-
-      if selection_state["background"] is not None:
-            canvas.restore_region(selection_state["background"])
-            canvas.blit(ax.bbox)
-            selection_state["background"] = None
-
-      # --- DÜZELTİLMİŞ KOORDİNAT HESABI ---
-       
-      # 2. Ham veriyi al
-      x_end = event.xdata
-      y_end = event.ydata
-
-      # 3. Eğer fare dışarıdaysa (None ise) pikselden hesapla
-      if x_end is None or y_end is None:
-            try:
-                  inv = ax.transData.inverted()
-                  x_end, y_end = inv.transform((event.x, event.y))
-            except Exception:
-                  # Hesaplama hatası olursa None kalabilir, aşağıda düzelteceğiz
-                  pass
-
-      # 4. GÜVENLİK KİLİDİ (Hala None ise başlangıç noktasını kullan)
-      # Bu blok sayesinde "TypeError: float - NoneType" hatası imkansız hale gelir.
-      if x_end is None or y_end is None:
-            x_end, y_end = selection_state["start_pos"]
-
-      # 5. Sınırlandırma (Clamping) - Grafiğin dışına taşmaması için
-      try:
-            x0_lim, x1_lim = ax.get_xlim()
-            y0_lim, y1_lim = ax.get_ylim()
-             
-            # Eksenler ters çevrilmiş olabilir, min/max garantileyelim
-            x_min_lim, x_max_lim = sorted([x0_lim, x1_lim])
-            y_min_lim, y_max_lim = sorted([y0_lim, y1_lim])
-
-            # Değeri sınırlar içine hapset
-            x_end = max(x_min_lim, min(x_end, x_max_lim))
-            y_end = max(y_min_lim, min(y_end, y_max_lim))
-      except Exception:
-            # Eksen limitleri alınamazsa (çok nadir), yine başlangıç noktasına dön
-            x_end, y_end = selection_state["start_pos"]
-
-      # --- SEÇİM MANTIĞI (Hesaplamalar) ---
-
-      x_start, y_start = selection_state["start_pos"]
-       
-      # Tekil Tık mı? (Mesafe hesabı artık güvenli çünkü None olma şansı yok)
-      xlims = ax.get_xlim(); ylims = ax.get_ylim()
-      diag = ((xlims[1]-xlims[0])**2 + (ylims[1]-ylims[0])**2)**0.5
-       
-      # Pisagor (Distance)
-      dist = ((x_start - x_end)**2 + (y_start - y_end)**2)**0.5
-       
-      is_single_click = (dist < diag * 0.01)
-
-      # Kutu sınırlarını belirle
-      x_min, x_max = sorted([x_start, x_end])
-      y_min, y_max = sorted([y_start, y_end])
-       
-      is_sector_avg_mode = (sector_combobox.get() == "Sector Avg")
-
-      # SENARYO A: TEKİL TIKLAMA
-      if is_single_click:
-            # Tıklama işlemi için 'event' nesnesini kullanıyoruz.
-            # event.inaxes kontrolünü burada manuel yapabiliriz veya contains'e bırakabiliriz.
-            # Eğer fare dışarıdaysa contains zaten False döner.
-            for sc, sub_df in scatter_points:
-                  contains, ind = sc.contains(event)
-                  if contains:
-                        if is_sector_avg_mode:
-                              lbl = sc.get_label()
-                              if lbl.endswith(" Avg"):
-                                    sec_name = lbl.replace(" Avg", "")
-                                    key = f"SEC_AVG|{sec_name}"
-                              else:
-                                    continue
-                        else:
-                              idx = ind["ind"][0]  
-                              row = sub_df.iloc[idx]
-                              key = get_point_key(row, settings_state)
-                         
-                        if key in selection_state["selected_keys"]:
-                              selection_state["selected_keys"].remove(key)
-                        else:
-                              selection_state["selected_keys"].add(key)
-                        break  
-
-      # SENARYO B: KUTU SEÇİMİ (BOX DRAG)
-      else:
-            if is_sector_avg_mode:
-                  for sc, _ in scatter_points:
-                        offsets = sc.get_offsets()
-                        if len(offsets) > 0:
-                              px, py = offsets[0]
-                              if (x_min <= px <= x_max) and (y_min <= py <= y_max):
-                                    lbl = sc.get_label()
-                                    if lbl.endswith(" Avg"):
-                                          sec_name = lbl.replace(" Avg", "")
-                                          key = f"SEC_AVG|{sec_name}"
-                                          selection_state["selected_keys"].add(key)
-            else:
-                  x_col_name = get_plot_x_col()
-                  for sc, sub_df in scatter_points:
-                        for _, row in sub_df.iterrows():
-                              try: val_x = float(row[x_col_name])
-                              except: val_x = float(row.get(EFFECTIVE_MRR_COL, row.get(BASE_MRR_FALLBACK_COL)))
-                              val_y = float(row['MRR Growth (%)'])
-                               
-                              px, py = to_plot_coords(val_x, val_y, settings_state.get("swap_axes", False))
-                              key = get_point_key(row, settings_state)
-                               
-                              if (x_min <= px <= x_max) and (y_min <= py <= y_max):
-                                    selection_state["selected_keys"].add(key)
-
-      draw_selection_highlights()
-
-      # Focus Lag Çözümü
-      try:
+    changed = handle_select_release(
+        event, 
+        selection_state, 
+        ax, 
+        canvas, 
+        get_point_key,      # Fonksiyonu parametre olarak gönderiyoruz
+        to_plot_coords,     # Fonksiyonu parametre olarak gönderiyoruz
+        scatter_points, 
+        sector_combobox.get(), 
+        settings_state
+    )
+    
+    if changed:
+        draw_selection_highlights()
+        # Focus Lag Çözümü
+        try:
             canvas.get_tk_widget().focus_set()
             root.focus_set()
-      except:
-            pass
+        except: pass
 
 def on_delete_selected(event):
       """Delete tuşu ile silme."""
