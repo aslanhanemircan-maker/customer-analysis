@@ -133,3 +133,151 @@ def is_risk_allowed(risk_val, settings_state):
     
     # Tanımsız bir risk durumu varsa varsayılan olarak göster
     return True
+
+def apply_churn_filters(df_in, settings_state):
+    """
+    Include / Show Only durumuna göre churn satırlarını filtreler.
+    """
+    # CHURN_COL sabitine bu dosya içinden erişilebilir
+    if CHURN_COL not in df_in.columns:
+        return df_in
+
+    churn_enabled = settings_state.get("churn_enabled", True)
+    show_only = settings_state.get("show_only_churn", False)
+
+    # Büyük/küçük harf duyarlılığı olmasın diye upper() kullanıyoruz
+    col = df_in[CHURN_COL].astype(str).str.upper()
+
+    if show_only:
+        # Sadece Churn olanları göster
+        return df_in[col.eq("CHURN")]
+    elif not churn_enabled:
+        # Churn olanları gizle (Sadece aktifler)
+        return df_in[~col.eq("CHURN")]
+    else:
+        # Hepsini göster
+        return df_in
+
+# --- Age Constants ---
+AGE_MODE_0_CURRENT = "0-Current"
+AGE_MODE_0_1       = "0-1"
+AGE_MODE_0_2       = "0-2"
+AGE_MODE_1_2       = "1-2"
+
+def get_age_filter_mode(settings_state):
+    """Settings içindeki aktif yaş filtresi modu."""
+    return settings_state.get("age_filter_mode", AGE_MODE_0_CURRENT)
+
+def apply_age_filters(df_in, settings_state):
+    """
+    Yaş filtresine göre satırları filtreler:
+    - 0-Current: hiç filtre yok (herkes görünür)
+    - 0-1: DoesCustomerCompleteItsFirstYear = Yes olmalı
+    - 0-2 / 1-2: DoesCustomersCompleteItsSecondYear = Yes olmalı
+    """
+    mode = get_age_filter_mode(settings_state)
+    df_out = df_in.copy()
+
+    if mode == AGE_MODE_0_1:
+        col = "DoesCustomerCompleteItsFirstYear"
+        if col in df_out.columns:
+            mask = df_out[col].astype(str).str.upper().eq("YES")
+            df_out = df_out[mask]
+
+    elif mode in (AGE_MODE_0_2, AGE_MODE_1_2):
+        col = "DoesCustomersCompleteItsSecondYear"
+        if col in df_out.columns:
+            mask = df_out[col].astype(str).str.upper().eq("YES")
+            df_out = df_out[mask]
+
+    return df_out  
+
+def get_growth_source_col_for_age_mode(settings_state, df_columns):
+    """
+    Aktif yaş filtresine göre hangi growth kolonunu kullanacağımızı döndürür.
+    """
+    mode = get_age_filter_mode(settings_state)
+
+    if mode == AGE_MODE_0_1:
+        return "MRR Growth (0-1)"
+    elif mode == AGE_MODE_0_2:
+        return "MRR Growth (0-2)"
+    elif mode == AGE_MODE_1_2:
+        return "MRR Growth(1-2)"
+    else:
+        # 0-Current
+        if "MRR Growth (0-today)" in df_columns:
+            return "MRR Growth (0-today)"
+        return "MRR Growth"
+
+def get_base_mrr_col_for_age_mode(settings_state, df_columns):
+    """
+    X eksenindeki baz MRR kolonunu yaş moduna göre seç.
+    """
+    mode = get_age_filter_mode(settings_state)
+
+    if mode == AGE_MODE_0_1:
+        return "First Year Ending MRR"
+    elif mode in (AGE_MODE_0_2, AGE_MODE_1_2):
+        return "Second Year Ending MRR"
+    else:
+        # 0-Current
+        return CURRENT_MRR_COL if CURRENT_MRR_COL in df_columns else BASE_MRR_FALLBACK_COL
+
+def get_exc_mrr_col_for_age_mode(settings_state):
+    """
+    Exc. License MRR için yaş moduna göre kaynak sütun.
+    """
+    mode = get_age_filter_mode(settings_state)
+
+    if mode == AGE_MODE_0_1:
+        return "First Year Ending Exc. License MRR"
+    elif mode in (AGE_MODE_0_2, AGE_MODE_1_2):
+        return "Second Year Ending Exc. License MRR"
+    else:
+        return "Exc. License MRR"    
+
+def is_risk_view_active(selected_sector, df_columns, settings_state):
+    """
+    Risk görünümü aktif mi kontrol eder.
+    Sadece belirli bir sektör seçiliyken ve checkbox açıksa True döner.
+    """
+    if RISK_COL not in df_columns:
+        return False
+    # "Sector Avg" veya "All" dışındaki bir sektör seçiliyse ve ayar açıksa
+    return (settings_state.get("risk_view_enabled", False) and selected_sector not in ("Sector Avg", "All"))
+
+def calculate_churn_stats(df_sub):
+    """
+    Verilen DataFrame alt kümesi için Churn istatistiklerini hesaplar.
+    Dönüş: (churned_mrr, total_mrr, ratio_pct, churn_count)
+    """
+    if df_sub is None or len(df_sub) == 0:
+        return 0.0, 0.0, 0.0, 0
+
+    # Churn Maskesi Oluştur
+    if CHURN_COL in df_sub.columns:
+        churn_col = df_sub[CHURN_COL].astype(str).str.upper()
+        churn_mask = churn_col.eq("CHURN")
+    else:
+        churn_mask = pd.Series(False, index=df_sub.index)
+
+    active_mask = ~churn_mask
+
+    # Aktif (churn olmayan) MRR
+    active_mrr = 0.0
+    if EFFECTIVE_MRR_COL in df_sub.columns:
+        active_mrr = df_sub.loc[active_mask, EFFECTIVE_MRR_COL].astype(float).sum()
+
+    # Churn olmuş MRR
+    churned_mrr = 0.0
+    if CHURNED_MRR_COL in df_sub.columns:
+        churned_mrr = df_sub.loc[churn_mask, CHURNED_MRR_COL].astype(float).sum()
+    elif EFFECTIVE_MRR_COL in df_sub.columns:
+        churned_mrr = df_sub.loc[churn_mask, EFFECTIVE_MRR_COL].astype(float).sum()
+
+    total_mrr = active_mrr + churned_mrr
+    ratio_pct = (churned_mrr / total_mrr * 100.0) if total_mrr > 0 else 0.0
+    churn_count = int(churn_mask.sum())
+
+    return float(churned_mrr), float(total_mrr), float(ratio_pct), churn_count    

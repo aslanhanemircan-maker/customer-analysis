@@ -5,6 +5,7 @@ import ctypes
 from ctypes import wintypes
 import tkinter as tk
 from tkinter import ttk, filedialog
+from handbook import open_handbook, preload_handbook_images
 try:
       from tkcalendar import DateEntry
       _HAS_TKCALENDAR = True
@@ -12,7 +13,8 @@ except Exception:
       DateEntry = None
       _HAS_TKCALENDAR = False   # Yüklü değilse fallback olarak Entry kullanılacak
       
-from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL, get_point_key, get_limit_removed_keys, is_risk_allowed
+from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL, get_point_key, get_limit_removed_keys, is_risk_allowed, apply_churn_filters, apply_age_filters, get_growth_source_col_for_age_mode, get_base_mrr_col_for_age_mode, get_exc_mrr_col_for_age_mode, is_risk_view_active, calculate_churn_stats
+
 from analysis import calculate_kmeans_labels, calculate_pareto_mask, calculate_regression_line
 from utils import (
     external_resource_path, 
@@ -37,70 +39,6 @@ from ui_components import (
 
 CHURN_X_COLOR = 'red' 
 CHURN_DATE_COL = 'Churn Date'
-       
-# ========================== Handbook Image Loader ==========================
-HANDBOOK_IMAGES = {} # Önbellek
-
-def load_handbook_image(filename, width=None):
-      """
-      Assets klasöründen görsel yükler, yeniden boyutlandırır (opsiyonel) ve önbelleğe alır.
-      Modern görünüm için görsellerin yüksek kaliteli olması önemlidir.
-      """
-      if filename in HANDBOOK_IMAGES:
-            return HANDBOOK_IMAGES[filename]
-
-      path = external_resource_path("assets", filename)
-      if not os.path.exists(path):
-            return None
-
-      try:
-            # PIL (Pillow) kullanarak modern yeniden boyutlandırma
-            # Eğer PIL yüklü değilse standart PhotoImage denenir (kalite düşebilir)
-            try:
-                  from PIL import Image, ImageTk
-                  pil_img = Image.open(path)
-                  if width:
-                        # En boy oranını koruyarak yeniden boyutlandır
-                        aspect = pil_img.height / pil_img.width
-                        height = int(width * aspect)
-                        pil_img = pil_img.resize((width, height), Image.LANCZOS) # Yüksek kalite filtre
-                   
-                  tk_img = ImageTk.PhotoImage(pil_img)
-                  HANDBOOK_IMAGES[filename] = tk_img
-                  return tk_img
-            except ImportError:
-                  # Fallback: Standart Tkinter (boyutlandırma yapamaz)
-                  tk_img = tk.PhotoImage(file=path)
-                  HANDBOOK_IMAGES[filename] = tk_img
-                  return tk_img
-      except Exception:
-            return None
-# ===========================================================================       
-
-def preload_handbook_images():
-      """
-      Handbook görsellerini uygulama açılırken hafızaya yükler.
-      Böylece butona basıldığında bekleme yapmaz.
-      """
-      # Handbook içinde kullandığınız tüm dosya isimleri
-      files_to_preload = [
-            "hb_graph_reading.png",  
-            "hb_risk_map.png",  
-            "hb_regression.png",
-            "hb_settings_limit.png",  
-            "hb_settings_reverse.png",  
-            "hb_settings_exc_mode.png",
-            "hb_settings_arrows.png",  
-            "hb_settings_axis.png",  
-            "hb_settings_risk.png",
-            "hb_settings_graph.png",  
-            "hb_churn_view.png"
-      ]
-       
-      for f in files_to_preload:
-            # Genişlik (width) handbook içindekiyle aynı olmalı (850)
-            # Böylece cache tam eşleşir.
-            load_handbook_image(f, width=850)
 
 # --- GLOBAL TOOLTIP YÖNETİCİSİ ---
 _tt_win = None
@@ -278,12 +216,6 @@ RISK_COLOR = {
 }
 
 AVG_RED = (0.80, 0.10, 0.10)   # Avg için farklı tonda kırmızı
-
-def is_risk_view_active(selected_sector: str) -> bool:
-      """Risk görünümü: sadece belirli bir sektör seçiliyken ve checkbox açıksa."""
-      if RISK_COL not in df.columns:
-            return False
-      return (settings_state.get("risk_view_enabled", False) and selected_sector not in ("Sector Avg", "All"))
 
 # Ana pencere özellikleri
 root.title("MRR Growth Analitik Düzlem")
@@ -904,15 +836,15 @@ def _gather_current_view_dataframe(only_selected=False):
       base_df = df[~df.apply(lambda r: get_point_key(r, settings_state) in hidden, axis=1)].copy()
 
       # 2. Temel filtreler (Churn, Age)
-      base_df = _apply_churn_filters(base_df)
-      base_df = _apply_age_filters(base_df)
+      base_df = apply_churn_filters(base_df, settings_state)
+      base_df = apply_age_filters(base_df, settings_state)
        
       # 3. Kolon ayarlamaları
-      age_growth_col = get_growth_source_col_for_age_mode()
+      age_growth_col = get_growth_source_col_for_age_mode(settings_state, df.columns)
       if age_growth_col in base_df.columns:
             base_df['MRR Growth (%)'] = base_df[age_growth_col].astype(float) * 100.0
 
-      age_base_mrr_col = get_base_mrr_col_for_age_mode()
+      age_base_mrr_col = get_base_mrr_col_for_age_mode(settings_state, df.columns)
       if age_base_mrr_col in base_df.columns:
             base_df[EFFECTIVE_MRR_COL] = base_df[age_base_mrr_col].astype(float)
 
@@ -920,7 +852,7 @@ def _gather_current_view_dataframe(only_selected=False):
             churn_mask_loc = base_df[CHURN_COL].astype(str).str.upper().eq("CHURN")
             base_df.loc[churn_mask_loc, EFFECTIVE_MRR_COL] = base_df.loc[churn_mask_loc, CHURNED_MRR_COL].astype(float)
 
-      exc_col_src = get_exc_mrr_col_for_age_mode()
+      exc_col_src = get_exc_mrr_col_for_age_mode(settings_state)
       if exc_col_src in base_df.columns:
             base_df['Exc. License MRR'] = base_df[exc_col_src].astype(float)
        
@@ -1007,7 +939,7 @@ def _gather_current_view_dataframe(only_selected=False):
             base_df = base_df[base_df['Company Sector'] == selected_sector]
        
       # Risk filtresi (Export için)
-      if is_risk_view_active(selected_sector) and (RISK_COL in base_df.columns):
+      if is_risk_view_active(selected_sector, df.columns, settings_state) and (RISK_COL in base_df.columns):
             base_df = base_df[base_df[RISK_COL].astype(str).str.upper().apply(lambda val: is_risk_allowed(val, settings_state))]
 
       # Çıktı DataFrame'i
@@ -1339,13 +1271,13 @@ def _visible_customer_names_starting_with(prefix_cf: str):
       # visible_df oluştur (filtrelenmiş veri)
       vis_df = df[~df.apply(lambda r: get_point_key(r, settings_state) in hidden, axis=1)].copy()
 
-      vis_df = _apply_churn_filters(vis_df)
-      vis_df = _apply_age_filters(vis_df)
+      vis_df = apply_churn_filters(vis_df, settings_state)
+      vis_df = apply_age_filters(vis_df, settings_state)
       vis_df = _apply_regression_filter(vis_df, get_plot_x_col())
 
       if current_mode not in ("All", "Sector Avg"):
             vis_df = vis_df[vis_df['Company Sector'] == current_mode]
-            if is_risk_view_active(current_mode) and (RISK_COL in vis_df.columns):
+            if is_risk_view_active(current_mode, df.columns, settings_state) and (RISK_COL in vis_df.columns):
                     vis_df = vis_df[vis_df[RISK_COL].astype(str).str.upper().apply(lambda val: is_risk_allowed(val, settings_state))]
 
       if 'Customer' not in vis_df.columns:
@@ -2046,108 +1978,6 @@ def remove_existing_legends():
                         pass
       active_legends.clear()
 
-# --- Age filter modları ---
-AGE_MODE_0_CURRENT = "0-Current"
-AGE_MODE_0_1         = "0-1"
-AGE_MODE_0_2         = "0-2"
-AGE_MODE_1_2         = "1-2"
-
-def get_age_filter_mode():
-      """Settings içindeki aktif yaş filtresi modu."""
-      return settings_state.get("age_filter_mode", AGE_MODE_0_CURRENT)
-
-
-def _apply_age_filters(df_in: pd.DataFrame) -> pd.DataFrame:
-      """
-      Yaş filtresine göre satırları filtreler:
-      - 0-Current: hiç filtre yok (herkes görünür)
-      - 0-1: DoesCustomerCompleteItsFirstYear = Yes olmalı
-      - 0-2 / 1-2: DoesCustomersCompleteItsSecondYear = Yes olmalı
-      """
-      mode = get_age_filter_mode()
-      df_out = df_in.copy()
-
-      if mode == AGE_MODE_0_1:
-            col = "DoesCustomerCompleteItsFirstYear"
-            if col in df_out.columns:
-                  mask = df_out[col].astype(str).str.upper().eq("YES")
-                  df_out = df_out[mask]
-
-      elif mode in (AGE_MODE_0_2, AGE_MODE_1_2):
-            col = "DoesCustomersCompleteItsSecondYear"
-            if col in df_out.columns:
-                  mask = df_out[col].astype(str).str.upper().eq("YES")
-                  df_out = df_out[mask]
-
-      return df_out
-
-
-def get_growth_source_col_for_age_mode():
-      """
-      Aktif yaş filtresine göre hangi growth kolonunu kullanacağımızı döndürür.
-      """
-      mode = get_age_filter_mode()
-
-      if mode == AGE_MODE_0_1:
-            return "MRR Growth (0-1)"
-      elif mode == AGE_MODE_0_2:
-            return "MRR Growth (0-2)"
-      elif mode == AGE_MODE_1_2:
-            return "MRR Growth(1-2)"     # Excel’deki tam kolon adın buysa aynen böyle bırak
-      else:
-            # 0-Current
-            if "MRR Growth (0-today)" in df.columns:
-                  return "MRR Growth (0-today)"
-            return "MRR Growth"
-
-
-def get_base_mrr_col_for_age_mode():
-      """
-      X eksenindeki baz MRR kolonunu yaş moduna göre seç.
-      """
-      mode = get_age_filter_mode()
-
-      if mode == AGE_MODE_0_1:
-            return "First Year Ending MRR"
-      elif mode in (AGE_MODE_0_2, AGE_MODE_1_2):
-            return "Second Year Ending MRR"
-      else:
-            # 0-Current
-            return CURRENT_MRR_COL if CURRENT_MRR_COL in df.columns else BASE_MRR_FALLBACK_COL
-
-
-def get_exc_mrr_col_for_age_mode():
-      """
-      Exc. License MRR için yaş moduna göre kaynak sütun.
-      """
-      mode = get_age_filter_mode()
-
-      if mode == AGE_MODE_0_1:
-            return "First Year Ending Exc. License MRR"
-      elif mode in (AGE_MODE_0_2, AGE_MODE_1_2):
-            return "Second Year Ending Exc. License MRR"
-      else:
-            return "Exc. License MRR"
-
-
-def _apply_churn_filters(df_in: pd.DataFrame) -> pd.DataFrame:
-      """Include / Show Only durumuna göre churn satırlarını filtreler."""
-      if CHURN_COL not in df_in.columns:
-            return df_in
-
-      churn_enabled = settings_state.get("churn_enabled", True)
-      show_only = settings_state.get("show_only_churn", False)
-
-      col = df_in[CHURN_COL].astype(str).str.upper()
-
-      if show_only:
-            return df_in[col.eq("CHURN")]
-      elif not churn_enabled:
-            return df_in[~col.eq("CHURN")]
-      else:
-            return df_in
-
-
 def _apply_regression_filter(df_in: pd.DataFrame, x_col: str) -> pd.DataFrame:
       """
       YENİ: Varsa, hesaplanmış regresyon çizgisine göre filtreler (above/below).
@@ -2335,21 +2165,21 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
       stats_df = visible_df_base.copy()
        
       # ============== NEW/CHURN: Include / Show Only mantığı ==============
-      visible_df_base = _apply_churn_filters(visible_df_base)
-      stats_df   = _apply_churn_filters(stats_df)
+      visible_df_base = apply_churn_filters(visible_df_base, settings_state)
+      stats_df = apply_churn_filters(stats_df, settings_state)
       # =====================================================================
 
       # ============== NEW/AGE: yaş filtresi & yaşa göre kolon seçimi ==============
-      visible_df_base = _apply_age_filters(visible_df_base)
-      stats_df     = _apply_age_filters(stats_df)
+      visible_df_base = apply_age_filters(visible_df_base, settings_state)
+      stats_df = apply_age_filters(stats_df, settings_state)
 
-      age_growth_col = get_growth_source_col_for_age_mode()
+      age_growth_col = get_growth_source_col_for_age_mode(settings_state, df.columns)
       if age_growth_col in visible_df_base.columns:
             visible_df_base['MRR Growth (%)'] = visible_df_base[age_growth_col].astype(float) * 100.0
             if age_growth_col in stats_df.columns:
                   stats_df['MRR Growth (%)'] = stats_df[age_growth_col].astype(float) * 100.0
 
-      age_base_mrr_col = get_base_mrr_col_for_age_mode()
+      age_base_mrr_col = get_base_mrr_col_for_age_mode(settings_state, df.columns)
       if age_base_mrr_col in visible_df_base.columns:
             visible_df_base[EFFECTIVE_MRR_COL] = visible_df_base[age_base_mrr_col].astype(float)
             if age_base_mrr_col in stats_df.columns:
@@ -2361,7 +2191,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
             visible_df_base.loc[churn_mask_loc, EFFECTIVE_MRR_COL] = visible_df_base.loc[churn_mask_loc, CHURNED_MRR_COL].astype(float)
 
       # Exc. License MRR’i yaş moduna göre doldur (Exc. görünümünde kullanılacak)
-      exc_src = get_exc_mrr_col_for_age_mode()
+      exc_src = get_exc_mrr_col_for_age_mode(settings_state)
       if exc_src in visible_df_base.columns:
             visible_df_base['Exc. License MRR'] = visible_df_base[exc_src].astype(float)
       # =====================================================================
@@ -2394,7 +2224,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                 temp_df_for_line = temp_df_for_line[temp_df_for_line['Company Sector'] == selected_sector]
             
             # Risk filtresi varsa uygula
-            if is_risk_view_active(selected_sector) and (RISK_COL in temp_df_for_line.columns):
+            if is_risk_view_active(selected_sector, df.columns, settings_state) and (RISK_COL in temp_df_for_line.columns):
                  temp_df_for_line = temp_df_for_line[temp_df_for_line[RISK_COL].astype(str).str.upper().apply(lambda val: is_risk_allowed(val, settings_state))]
     
             # --- YENİ: Hesabı 'analysis.py' içindeki fonksiyona yaptır ---
@@ -2439,7 +2269,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
 
       plot_cx, plot_cy = to_plot_coords(eff_center_x, eff_center_y, settings_state.get("swap_axes", False))
       # Arrow’larda kullanılacak baz MRR kolonu (yaş moduna göre)
-      base_col_for_arrow = get_base_mrr_col_for_age_mode()
+      base_col_for_arrow = get_base_mrr_col_for_age_mode(settings_state, df.columns)
       if base_col_for_arrow not in df.columns:
             base_col_for_arrow = BASE_MRR_FALLBACK_COL
 
@@ -2466,7 +2296,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
             if risk_val == "BOOKED CHURN":   return settings_state.get("risk_show_booked", True)
             return True
 
-      risk_active = is_risk_view_active(selected_sector)
+      risk_active = is_risk_view_active(selected_sector, df.columns, settings_state)
       show_avg_labels = settings_state.get("show_avg_labels", True) and (selected_sector == "Sector Avg")
 
       if selected_sector == "Sector Avg":
@@ -2861,7 +2691,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
       ax.grid(True, linestyle='--', alpha=0.6)
 
       # Legend
-      if is_risk_view_active(sector_combobox.get()):
+      if is_risk_view_active(sector_combobox.get(), df.columns, settings_state):
             # Risk görünümü için visible_df_base (filtresiz) kullanılmalı
             sd_vis = visible_df_base[visible_df_base['Company Sector'] == sector_combobox.get()]
             if RISK_COL in sd_vis.columns:
@@ -3082,41 +2912,6 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
       ]
 
       sector_count_label.config(text="\n".join(sector_lines))
-
-      # --- Churn metni ---
-      # Churn metinleri de *filtresiz* stats_df (veya visible_df_base) üzerinden hesaplanmalı
-      def _calc_churn_mrr_ratio(df_sub):
-            import pandas as _pd
-
-            if df_sub is None or len(df_sub) == 0:
-                  return 0.0, 0.0, 0.0, 0   # churn_mrr, total_mrr, ratio_pct, churn_count
-
-            if CHURN_COL in df_sub.columns:
-                  churn_col = df_sub[CHURN_COL].astype(str).str.upper()
-                  churn_mask = churn_col.eq("CHURN")
-            else:
-                  churn_mask = _pd.Series(False, index=df_sub.index)
-
-            active_mask = ~churn_mask
-
-            # Aktif (churn olmayan) MRR
-            active_mrr = 0.0
-            if EFFECTIVE_MRR_COL in df_sub.columns:
-                  active_mrr = df_sub.loc[active_mask, EFFECTIVE_MRR_COL].astype(float).sum()
-
-            # Churn olmuş MRR
-            churned_mrr = 0.0
-            if CHURNED_MRR_COL in df_sub.columns:
-                  churned_mrr = df_sub.loc[churn_mask, CHURNED_MRR_COL].astype(float).sum()
-            elif EFFECTIVE_MRR_COL in df_sub.columns:
-                  churned_mrr = df_sub.loc[churn_mask, EFFECTIVE_MRR_COL].astype(float).sum()
-
-            total_mrr = active_mrr + churned_mrr
-            ratio_pct = (churned_mrr / total_mrr * 100.0) if total_mrr > 0 else 0.0
-
-            churn_count = int(churn_mask.sum())
-
-            return float(churned_mrr), float(total_mrr), float(ratio_pct), churn_count
       if CHURN_COL in stats_df.columns:
           sel = sector_combobox.get()
           sdf = stats_df.copy()
@@ -3135,7 +2930,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                       sec_df = sdf[sdf['Company Sector'] == sec]
                       
                       # Helper fonksiyon ile hesapla
-                      c_mrr, t_mrr, r_pct, c_cnt = _calc_churn_mrr_ratio(sec_df)
+                      c_mrr, t_mrr, r_pct, c_cnt = calculate_churn_stats(sec_df)
                     
                       # Global toplamlara ekle (Sadece Sector Avg modunda manuel topluyoruz, 
                       # All modunda zaten sdf full data ama listeyi oluşturmak için bu döngü şart)
@@ -3150,7 +2945,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                 
                 # Eğer "All" modundaysak, global toplamları direkt ana veriden (sdf) alalım (Daha hassas olur)
                 if sel == "All":
-                      total_churn_mrr_all, total_mrr_all, global_ratio_pct, total_churn_customers_all = _calc_churn_mrr_ratio(sdf)
+                      total_churn_mrr_all, total_mrr_all, global_ratio_pct, total_churn_customers_all = calculate_churn_stats(sdf)
                 else:
                       # Sector Avg için global oranı hesapla
                       if total_mrr_all > 0:
@@ -3159,7 +2954,7 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
           else: 
                 # B) Tek Sektör Seçimi
                 sec_df = sdf[sdf['Company Sector'] == sel]
-                total_churn_mrr_all, total_mrr_all, global_ratio_pct, total_churn_customers_all = _calc_churn_mrr_ratio(sec_df)
+                total_churn_mrr_all, total_mrr_all, global_ratio_pct, total_churn_customers_all = calculate_churn_stats(sec_df)
                 # Tek sektörde detay listesine gerek yok (veya tek satır ekleyebiliriz)
                 sector_entries = [] 
 
@@ -3347,7 +3142,7 @@ def on_motion(event):
                                             text += f" ({cd})"
                    
                   # Eski MRR (Oklar açıksa)
-                  base_col = get_base_mrr_col_for_age_mode()
+                  base_col = get_base_mrr_col_for_age_mode(settings_state, df.columns)
                   show_arrows = (
                         license_var.get() == "Exc."
                         and settings_state.get("use_updated_exc_license_values", False)
@@ -4063,415 +3858,10 @@ root.deiconify()
 
 handbook_win_ref = None
 
-def open_handbook():
-      """
-      Analitik Düzlem & Kullanım Kılavuzu (Scroll ve Zıplama Sorunları Giderildi)
-      """
-      global handbook_win_ref
-
-      # 1. PENCERE KONTROLÜ
-      if handbook_win_ref is not None and handbook_win_ref.winfo_exists():
-            try:
-                  handbook_win_ref.deiconify()       
-                  handbook_win_ref.lift()              
-                  handbook_win_ref.focus_force()    
-                  return
-            except Exception:
-                  handbook_win_ref = None
-
-      # 2. YENİ PENCERE OLUŞTUR
-      hb_win = tk.Toplevel(root)
-      handbook_win_ref = hb_win
-       
-      hb_win.title("Analitik Düzlem & Kullanım Kılavuzu")
-      hb_win.transient(root)
-       
-      w, h = 1000, 800
-      center_over_parent(hb_win, root, w, h)
-
-      hb_win.bind("<Escape>", lambda e: hb_win.destroy())
-
-      # --- Stiller ---
-      style = ttk.Style()
-      style.configure("Handbook.TNotebook", tabposition='nw', background="white")
-       
-      nb = ttk.Notebook(hb_win, style="Handbook.TNotebook")
-      nb.pack(fill="both", expand=True, padx=0, pady=0)
-
-      # --- İçerik Oluşturucu Yardımcı Fonksiyon ---
-      def add_handbook_tab(title, content_segments):
-            # Ana çerçeve
-            frame = tk.Frame(nb, bg="white")  
-            nb.add(frame, text=f" {title} ")
-             
-            # Grid Layout
-            frame.grid_columnconfigure(1, weight=1)
-            frame.grid_rowconfigure(0, weight=1)
-
-            # Scrollbar
-            scrollbar = ttk.Scrollbar(frame, orient="vertical")
-            scrollbar.grid(row=0, column=3, sticky="ns")
-
-            # Metin Kutusu
-            txt = tk.Text(frame, wrap="word", padx=0, pady=0,  
-                                 font=("Segoe UI", 10), bg="white", relief="flat",
-                                 border=0, highlightthickness=0,
-                                 yscrollcommand=scrollbar.set,
-                                 cursor="arrow")  
-             
-            txt.grid(row=0, column=1, sticky="nsew", padx=0, pady=20)
-             
-            # Yan Boşluklar (Margin)
-            tk.Frame(frame, bg="white", width=30).grid(row=0, column=0, sticky="ns")
-            tk.Frame(frame, bg="white", width=20).grid(row=0, column=2, sticky="ns")
-
-            scrollbar.config(command=txt.yview)
-             
-            # Taglar
-            txt.tag_configure("h1", font=("Segoe UI", 18, "bold"), foreground="#2c3e50", spacing3=15, spacing1=10)
-            txt.tag_configure("h2", font=("Segoe UI", 13, "bold"), foreground="#1f77b4", spacing3=10, spacing1=25)
-            txt.tag_configure("bold", font=("Segoe UI", 10, "bold"))
-            txt.tag_configure("bullet", lmargin1=25, lmargin2=35, spacing1=4)
-            txt.tag_configure("normal", lmargin1=5, lmargin2=5, spacing1=3)
-
-            txt.insert("end", "\n", "normal")  
-
-            # --- DÜZELTİLMİŞ SCROLL PROPAGATOR (AKICI SCROLL) ---
-            def _propagate_scroll(event):
-                  """
-                  Görsellerin üzerindeyken çalışır. Satır (units) bazlı değil,  
-                  Pixel/Oran (moveto) bazlı kaydırma yaparak büyük görsellerin  
-                  tek seferde atlanmasını engeller.
-                  """
-                  try:
-                        delta = 0
-                        if hasattr(event, "delta") and event.delta:
-                              delta = event.delta
-                        elif hasattr(event, "num"): # Linux uyumluluğu
-                              if event.num == 4: delta = 120
-                              elif event.num == 5: delta = -120
-                         
-                        if delta:
-                              # Mevcut görünüm oranlarını al (0.0 - 1.0 arası)
-                              cur_top, cur_bot = txt.yview()
-                              view_height = cur_bot - cur_top
-                               
-                              # Ekran boyunun %5'i kadar kaydır (Yumuşak geçiş için ideal oran)
-                              # Bu sayede görsel 1000px bile olsa satır olarak atlamaz, piksel piksel kayar.
-                              scroll_step = 0.05 * view_height
-                               
-                              if delta > 0: # Yukarı
-                                    new_top = max(0.0, cur_top - scroll_step)
-                              else: # Aşağı
-                                    new_top = min(1.0, cur_top + scroll_step)
-                                     
-                              txt.yview_moveto(new_top)
-                               
-                  except Exception:
-                        pass
-                  return "break" # Event'in başka yere gitmesini engelle
-
-            img_counter = 0  
-
-            for segment in content_segments:
-                  # --- TEXT TİPİ İÇERİK ---
-                  if segment["type"] == "text":
-                        lines = segment["data"].split('\n')
-                        for line in lines:
-                              line = line.strip()
-                              if not line:
-                                    txt.insert("end", "\n")
-                                    continue
-                               
-                              if line.startswith("# "):
-                                    txt.insert("end", line[2:] + "\n", "h1")
-                              elif line.startswith("## "):
-                                    txt.insert("end", line[3:] + "\n", "h2")
-                              elif line.startswith("- "):
-                                    parts = line[2:].split("**")
-                                    txt.insert("end", "• ", "bullet")
-                                    for i, part in enumerate(parts):
-                                          tag = "bold" if i % 2 == 1 else "bullet"
-                                          txt.insert("end", part, tag)
-                                    txt.insert("end", "\n")
-                              else:
-                                    parts = line.split("**")
-                                    txt.insert("end", "", "normal")
-                                    for i, part in enumerate(parts):
-                                          tag = "bold" if i % 2 == 1 else "normal"
-                                          txt.insert("end", part, tag)
-                                    txt.insert("end", "\n")
-                   
-                  # --- IMAGE TİPİ İÇERİK ---
-                  elif segment["type"] == "image":
-                        img_file = segment.get("file")
-                        caption_text = segment.get("caption", "Görsel")
-                         
-                        img_counter += 1
-                         
-                        # 1. Container
-                        container = tk.Frame(txt, bg="white", bd=0)  
-
-                        # 2. Header
-                        header_frame = tk.Frame(container, bg="#f8f9fa", height=40, cursor="hand2")
-                        header_frame.pack(fill="x", expand=True)
-                         
-                        stripe = tk.Frame(header_frame, bg="#1f77b4", width=4)
-                        stripe.pack(side="left", fill="y")
-                         
-                        header_lbl = tk.Label(header_frame,  
-                                                         text=f"▶   Görseli Göster: {caption_text}",  
-                                                         font=("Segoe UI", 10, "bold"),
-                                                         bg="#f8f9fa", fg="#495057",
-                                                         anchor="w", padx=10, pady=10)
-                        header_lbl.pack(side="left", fill="x", expand=True)
-
-                        # 3. Content Frame
-                        content_frame = tk.Frame(container, bg="white", pady=10)
-                         
-                        # Görsel Yükleme
-                        tk_img = load_handbook_image(img_file, width=850)
-                         
-                        if tk_img:
-                              img_lbl = tk.Label(content_frame, image=tk_img, bg="white", bd=0)
-                              img_lbl.image = tk_img  
-                              img_lbl.pack(anchor="center")
-                               
-                              # Yeni Scroll Bağlamaları
-                              img_lbl.bind("<MouseWheel>", _propagate_scroll)
-                              img_lbl.bind("<Button-4>", _propagate_scroll)
-                              img_lbl.bind("<Button-5>", _propagate_scroll)
-                        else:
-                              missing_lbl = tk.Label(content_frame,  
-                                                                 text=f"⚠️ Dosya bulunamadı: assets/{img_file}",
-                                                                 fg="red", bg="white")
-                              missing_lbl.pack(pady=10)
-                              missing_lbl.bind("<MouseWheel>", _propagate_scroll)
-                              missing_lbl.bind("<Button-4>", _propagate_scroll)
-                              missing_lbl.bind("<Button-5>", _propagate_scroll)
-
-                        if caption_text:
-                              cap_lbl = tk.Label(content_frame, text=caption_text,  
-                                                           font=("Segoe UI", 9, "italic"), fg="#6c757d", bg="white")
-                              cap_lbl.pack(pady=(5,0))
-                              cap_lbl.bind("<MouseWheel>", _propagate_scroll)
-                              cap_lbl.bind("<Button-4>", _propagate_scroll)
-                              cap_lbl.bind("<Button-5>", _propagate_scroll)
-
-                        # --- DÜZELTME: ZIPLAMASIZ TOGGLE ---
-                        def toggle_image(e=None,  
-                                                  h_lbl=header_lbl,  
-                                                  c_frame=content_frame,  
-                                                  cont=container,  
-                                                  txt_cap=caption_text):
-                               
-                              is_visible = c_frame.winfo_viewable()
-                               
-                              if is_visible:
-                                    c_frame.pack_forget()
-                                    h_lbl.config(text=f"▶   Görseli Göster: {txt_cap}", bg="#f8f9fa", fg="#495057")
-                                    header_frame.config(bg="#f8f9fa")
-                              else:
-                                    c_frame.pack(fill="x", expand=True, padx=10)
-                                    h_lbl.config(text=f"▼   Görseli Gizle: {txt_cap}", bg="#e7f5ff", fg="#1f77b4")
-                                    header_frame.config(bg="#e7f5ff")
-                               
-                              # Sadece boyutları güncelle, ama txt.see() YAPMA!
-                              # txt.see() ekranı zorla kaydırdığı için zıplama yapar.
-                              # update_idletasks yeterlidir, içerik doğal olarak aşağı itilir.
-                              c_frame.update_idletasks()  
-                              cont.update_idletasks()
-                               
-                              # Düzeltme: Focus'u pencerede tut
-                              txt.focus_set()
-
-                        header_frame.bind("<Button-1>", toggle_image)
-                        header_lbl.bind("<Button-1>", toggle_image)
-                        stripe.bind("<Button-1>", toggle_image)
-
-                        for widget in (container, header_frame, header_lbl, stripe, content_frame):
-                              widget.bind("<MouseWheel>", _propagate_scroll)
-                              widget.bind("<Button-4>", _propagate_scroll)
-                              widget.bind("<Button-5>", _propagate_scroll)
-
-                        txt.insert("end", "\n")  
-                        txt.window_create("end", window=container, stretch=1)
-                        txt.insert("end", "\n")  
-             
-            txt.configure(state="disabled")
-
-      # ================= İÇERİK TANIMLARI =================
-      # (Buradaki içerik tanımlarınız orijinal kodla aynı kalmalı,  
-      # sadece yukarıdaki fonksiyon yapısı değişti)
-
-      # TAB 1: GRAFİK OKUMA
-      content_graph = [
-            {"type": "text", "data": """# Grafik ve Eksenlerin Anlamı
-
-Bu uygulama, müşteri portföyünü **MRR** ve **Growth** eksenlerinde görselleştirir. Her bir nokta bir müşteriyi veya bir sektör ortalamasını temsil eder.
-"""},
-            {"type": "text", "data": """## 1. Eksenlerin Mantığı
-- **X Ekseni (Yatay):** Müşterinin MRR değerini gösterir. Sağa gidildikçe müşteri   MRR'ı artar.
-- **Y Ekseni (Dikey):** Müşterinin büyüme hızını gösterir. Yukarı gidildikçe büyüme hızı artar.
-- **Kesişim Noktası (Merkez):** Grafiğin ortasındaki çizgilerin kesiştiği nokta, tüm portföyün (veya filtrelenen verinin) ortalamasını gösterir.
-"""},
-            {"type": "image", "file": "hb_graph_reading.png",  
-              "caption": "Şekil 1: Analitik düzlem. Yatay eksen MRR'ı, dikey eksen büyümeyi gösterir."},
-             
-            {"type": "text", "data": """## 2. Quadrant (Dört Bölge) Analizi
-Merkez çizgileri grafiği 4 ana bölgeye ayırır:
-- **Sağ Üst (+, +):** **"Yıldızlar"**. Hem MRR'ı hem de büyüme hızı ortalamanın üzerinde olan müşterileri temsil eder.
-- **Sol Üst (-, +):** **"Potansiyeller"**. MRR'ı henüz ortalamanın altında ama çok hızlı büyüyenler.
-- **Sağ Alt (+, -):** **"Nakit İnekleri"**. MRR'ı yüksek ama büyümesi ortalamadan yavaş olan müşteriler. Riskli olabilir.
-- **Sol Alt (-, -):** **"Düşük Performans"**. Hem MRR'ı hem de büyüme hızı ortalamanın altında olan müşteriler.
-"""},
-            {"type": "image", "file": "hb_risk_map.png",  
-              "caption": "Şekil 2: Dört Bölge Analizi."},
-             
-      ]
-
-      # TAB 2: REGRESYON
-      content_regression = [
-            {"type": "text", "data": """# Regresyon Analizi (Trend Çizgisi)
-
-Settings menüsünden veya **Ctrl+L** kısayolu ile açılan regresyon çizgisi, filtrelenen verilerin genel eğilimi matematiksel olarak hesaplar.
-
-## Regresyon Çizgisi Nedir?
-Bu çizgi, **MRR büyüklüğü ile Büyüme Oranı arasındaki ilişkiyi** (korelasyonu) gösterir.
-- **Çizgi Aşağı Eğimliyse:** Müşteriler büyüdükçe (MRR arttıkça) büyüme hızları yavaşlıyor demektir (Doğal bir durumdur, "Büyümenin Bedeli").
-- **Çizgi Yukarı Eğimliyse:** Büyük müşteriler, küçüklerden daha hızlı büyüyor demektir (Pozitif bir durum)
-
-## Filtreleme Okları  
-Regresyon açıldığında sağ alt köşede iki ok butonu belirir:
-- **Yukarı Ok :** Sadece regresyon çizgisinin üzerinde kalan müşterileri gösterir.
-- **Aşağı Ok :** Sadece regresyon çizgisinin altında kalan müşterileri gösterir.
-- **Tekrar Tıklama:** Seçili oka tekrar basarsanız filtre kalkar ve tüm noktalar görünür.
-"""},
-            {"type": "image", "file": "hb_regression.png",  
-              "caption": "Şekil 3: Regresyon çizgisi ve sağ alttaki filtre okları"}
-      ]
-
-      # TAB 3: AYARLAR
-      content_settings = [
-            {"type": "text", "data": """# Settings Menüsü Detayları
-
-Ayarlar penceresindeki her bir sekmenin işlevi aşağıdadır:
-
-## 1. Limit Options
-Veri setini belirli kriterlere göre daraltmanızı sağlar.
-- **Mode (Limit / No Limit):** Filtrelerin aktif olup olmayacağını seçer.
-- **Ranges:** Sadece belirli bir MRR aralığındaki (ör. 1000$ - 5000$) veya Büyüme aralığındaki (ör. %10 üzeri) müşterileri görmek için kullanılır.
-- **Filter by Age:**
-   - **(0-Current):** Tüm müşterileri gösterir (Varsayılan).
-   - **(0-1):** Sadece 1. yılını tamamlamış müşterileri baz alır. Veriler 1. yıl sonu verisine döner.
-   - **(0-2):** Sadece 2. yılını tamamlamış müşterileri gösterir.
-   - **(1-2):** Sadece 2. yılını tamamlamış müşterilerin 1. yıldan itibaren olan verilerini gösterir.
-"""},
-            {"type": "image", "file": "hb_settings_limit.png", "caption": "Şekil 4: Limit Options Ayarları"},
-
-            {"type": "text", "data": """## 2. License Options (Exc. Modu)
-**Not:** License options sekmesi, eğer license option exc. seçeneği seçili değilse erişilebilir olmaz.              
-- **Reverse Effect:** Lisans filtre mantığını tersine çevirir ("X değerden büyük olanları gizle" yerine "küçük olanları gizle" yapar).
-- **Sağ Paneldeki "Exc." Modu:** Lisans gelirlerini hariç tutarak saf hizmet gelirine odaklanmak içindir.
-- **Show Difference Arrows:** "Exc." modundayken açılırsa, müşterinin Lisans Dahil (Inc.) halinden Lisans Hariç (Exc.) haline geçişini grafikte **oklarla** gösterir. Okun boyu, lisans gelirinin büyüklüğünü temsil eder.
-"""},
-            {"type": "image", "file": "hb_settings_reverse.png", "caption": "Şekil 5: License Options: Reverse Effect"},
-            {"type": "image", "file": "hb_settings_exc_mode.png", "caption": "Şekil 6: Right Panel: Inc./Exc. Selection"},
-            {"type": "image", "file": "hb_settings_arrows.png", "caption": "Şekil 7: Show Difference Arrows"},
-
-            {"type": "text", "data": """## 3. Axis Settings
-- **Fixed Axis:** Çeşitli filtreler uygulandığında bile merkez çizgilerinin (ortalama çizgilerinin) yerini sabitler.
-- **Draw Growth=0 Line:** Büyümesi %0 olan noktaya kırmızı kesik bir çizgi çeker. Referans noktasıdır.
-- **Swap Axes:** X ve Y eksenlerinin yerini değiştirir. (X=Büyüme, Y=MRR olur).
-"""},
-            {"type": "image", "file": "hb_settings_axis.png", "caption": "Şekil 8: Axis Settings Paneli"},
-
-            {"type": "text", "data": """## 4. Customer Risk
-- **Show Risk Statement:** Risk görünümünü genel olarak açar/kapatır.
-- **Show NO/LOW/MED/HIGH:** Belirli risk gruplarını grafikten gizlemek için tikleri kaldırabilirsiniz. Örneğin sadece "HIGH RISK" müşterilere odaklanmak için diğerlerini kapatabilirsiniz.
-"""},
-            {"type": "image", "file": "hb_settings_risk.png", "caption": "Şekil 9: Customer Risk Paneli"},
-
-            {"type": "text", "data": """## 5. Graph Settings
-- **Show Sector Counts Above AVG Points:** "Sector Avg" modundayken, yuvarlakların üzerine o sektörde kaç müşteri olduğunu yazar (Örn: #45).
-- **Activate Search Box:** Ana ekrandaki arama çubuğunu açar/kapatır.
-- **Activate Customer Risk Color Map:** Aktif hale getirildiğinde dört farklı bölgenin arkaplanları o bölgedeki müşterilerin risk renklerinin ortalamasına bürünür:
-- **Distance-weighted quadrant colors:** 0-3 arası değer alabilir. Girilen değere göre müşterinin ortalamaya(eksenlerin kesiştiği yer) olan uzaklığı kendi bölgesindeki renk ortalama belirleme katsayısının önemini arttırır.
-- **Show Regression Line:** Grafikteki regresyon çizgisini açar/kapatır.
-- **Fix Regression Line:** Regresyon çizgisini sabitler. Filtre uygulanıldığında konumunu korumaya devam eder.
-"""},
-            {"type": "image", "file": "hb_settings_graph.png", "caption": "Şekil 10: Graph Settings Paneli"},
-
-      ]
-
-      # TAB 4: KONTROLLER
-      content_controls = [
-            {"type": "text", "data": """# Kontroller ve Kısayollar
-
-Uygulamayı klavye ve fare ile hızlı yönetmek için aşağıdaki yöntemleri kullanabilirsiniz.
-
-## Fare Kullanımı
-- **Sol Tık (Basılı Tutup Sürükle):** Grafiği kaydırır (Pan).
-- **Ctrl + Sol Tık (Sürükle):** Kutu çizerek çoklu seçim yapar (Box Selection).
-- **Sağ Tık:** Üzerine gelinen müşteriyi veya (Sector Avg modundaysanız) o sektörü analizden siler.
-- **Tekerlek:** İmlecin olduğu yere yakınlaşır/uzaklaşır (Zoom).
-
-## Klavye Kısayolları (Genel)
-- **Ctrl + F (Find):** Arama çubuğunu açar/kapatır.
-- **Ctrl + L (Line):** Regresyon (Trend) çizgisini açar/kapatır.
-- **Ctrl + R (Reset):** Grafiği verilere otomatik sığdırır (Auto-Zoom).
-- **Ctrl + Z (Undo):** Silinen noktaları geri alır.
-- **Ctrl + P (Preferences):** Ayarlar penceresini açar.
-- **Ctrl + G (Guide):** Bu kılavuzu açar.
-
-## Seçim ve Odaklanma Kısayolları
-- **Shift (Basılı Tut):** Sadece arama kutusu açıkken çalışır. Single Mode işlevinin kısayoludur. Tuşu bırakınca eski görünüm geri gelir.
-- **Delete:** Seçili olan (etrafı yanan) noktaları grafikten siler.
-- **Ctrl + E:** Seçimi tersine çevirir (Seçili olanları bırakır, seçili olmayanları seçer).
-
-## Arama Kutusu (Search Bar) Davranışları
-- **Normal Mod:** Müşteri isimlerini arar. Eşleşen müşterileri aşağıda listede gösterir. Listeden müşteri seçilirse müşterinin noktası yanar.
-- **Single Mod:** Basılı tutulduğunda arama kutusunda seçili olan müşteriye odaklanıp diğer müşterileri saklar.
-"""}
-      ]
-
-      # TAB 5: CHURN
-      content_churn = [
-            {"type": "text", "data": """# Churn (Kayıp) Analizi ve Seçenekleri
-
-Sağ panelde bulunan **Churn Options** kutusu, kaybedilen müşterileri (Churn) analiz etmenizi sağlar.
-
-## 1. Görünüm Seçenekleri
-- **Include Churned Customers:** - Normalde grafik sadece aktif müşterileri gösterir. Bu kutucuğu işaretlerseniz, analiz havuzuna Churn olmuş müşteriler de dahil edilir.
-   - Churn müşteriler grafikte **Kırmızı 'X'** işareti ile ayırt edilir.
-- **Show Only Churned Customers:** - Aktif müşterileri tamamen gizler ve **sadece** kaybedilen müşterileri gösterir.
-   - Kayıpların hangi bölgelerde (Quadrant) veya hangi MRR seviyelerinde yoğunlaştığını görmek için kullanılır.
-"""},
-            {"type": "image", "file": "hb_churn_view.png", "caption": "Şekil 11: Churn Options Paneli"},
-
-            {"type": "text", "data": """## 2. Churn Ratio (Kayıp Oranı) Nasıl Hesaplanır?
-Panelde gördüğünüz "Churn Ratio" veya "Total Churn Ratio", müşteri adedine göre değil, **Parasal Değere (MRR)** göre hesaplanır.
-
-**Formül:**
-`Churn Oranı = (Churned MRR) / (Aktif MRR + Churned MRR)`
-"""}
-      ]
-
-      # Sekmeleri oluştur
-      add_handbook_tab("Grafik Okuma", content_graph)
-      add_handbook_tab("Regresyon Analizi", content_regression)
-      add_handbook_tab("Ayarlar Detayı", content_settings)
-      add_handbook_tab("Churn Seçenekleri", content_churn)
-      add_handbook_tab("Kontroller & Kısayollar", content_controls)
-
-      # Alt kısma kapat butonu
-      btn_f = tk.Frame(hb_win, bg="white", padx=10, pady=10)
-      btn_f.pack(fill="x", side="bottom")
-      ttk.Button(btn_f, text="Kapat", style="Export.TButton", command=hb_win.destroy).pack(side="right")
 
 # --- 1. Handbook Butonunu Oluştur ---
 # Export butonuyla aynı stili kullansın
-handbook_btn = ttk.Button(root, text="📘 Handbook", command=open_handbook, style="Export.TButton")
+handbook_btn = ttk.Button(root, text="📘 Handbook", command=lambda: open_handbook(root), style="Export.TButton")
 
 # --- 2. Üst Bar Yerleşimini Düzenle ---
 # Settings -> Excel -> Handbook -> SearchBar sıralamasını garanti altına alan fonksiyon
