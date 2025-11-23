@@ -49,7 +49,8 @@ from interactions import (
     handle_select_motion,
     handle_select_release,
     handle_focus_shortcut_press,
-    handle_focus_shortcut_release
+    handle_focus_shortcut_release,
+    update_ctrl_state
 )
 
 CHURN_X_COLOR = 'red' 
@@ -3756,24 +3757,14 @@ def _auto_clear_selection_on_change(*args):
 
 ctrl_state = {"pressed": False}
 
-def _set_ctrl_on(event):
-      ctrl_state["pressed"] = True
-
-def _set_ctrl_off(event):
-      ctrl_state["pressed"] = False
-
 # Klavye olaylarını ana pencereye bağla
-root.bind("<KeyPress-Control_L>", _set_ctrl_on, add="+")
-root.bind("<KeyPress-Control_R>", _set_ctrl_on, add="+")
-root.bind("<KeyRelease-Control_L>", _set_ctrl_off, add="+")
-root.bind("<KeyRelease-Control_R>", _set_ctrl_off, add="+")
+root.bind("<KeyPress-Control_L>",   lambda e: update_ctrl_state(ctrl_state, True), add="+")
+root.bind("<KeyPress-Control_R>",   lambda e: update_ctrl_state(ctrl_state, True), add="+")
 
-# Pencere odağı kaybedip kazanırsa takılmayı önlemek için resetle
-def _reset_ctrl_on_focus(event):
-      ctrl_state["pressed"] = False
+root.bind("<KeyRelease-Control_L>", lambda e: update_ctrl_state(ctrl_state, False), add="+")
+root.bind("<KeyRelease-Control_R>", lambda e: update_ctrl_state(ctrl_state, False), add="+")
 
-root.bind("<FocusOut>", _reset_ctrl_on_focus, add="+")
-sector_combobox.bind("<<ComboboxSelected>>", _auto_clear_selection_on_change, add="+")
+root.bind("<FocusOut>", lambda e: update_ctrl_state(ctrl_state, False), add="+")
 
 # =============================================================================
 # SINGLE MODE KLAVYE KISAYOLU (CTRL + SHIFT)

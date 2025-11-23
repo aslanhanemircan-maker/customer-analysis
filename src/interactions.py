@@ -151,27 +151,42 @@ def handle_select_press(event, selection_state, pan_active, ctrl_pressed, ax):
 
 def handle_select_motion(event, selection_state, ax, canvas):
     """
-    Kutu çizimini sürükleyerek günceller.
+    Kutu çizimini sürükleyerek günceller. 
+    Mouse grafik dışına çıksa bile sınırları korur (Clamping).
     """
     if not selection_state["active"] or selection_state["rect"] is None:
         return
 
-    # Koordinatları al ve sınırla (Clamping)
+    # 1. Koordinatları Al
     x_curr, y_curr = event.xdata, event.ydata
 
+    # 2. Eğer mouse grafik dışındaysa (None ise), Pikselden hesapla
     if x_curr is None or y_curr is None:
         try:
+            # Ekran piksellerini (event.x, event.y) Veri koordinatına çevir
             inv = ax.transData.inverted()
             x_curr, y_curr = inv.transform((event.x, event.y))
-        except:
-            return
+        except Exception:
+            pass
 
+    # 3. Eğer hala None ise (çok nadir), işlem yapma
+    if x_curr is None or y_curr is None:
+        return
+
+    # 4. Sınırlandırma (Clamping)
+    # Grafiğin şu anki X ve Y sınırlarını al
     x0_lim, x1_lim = ax.get_xlim()
     y0_lim, y1_lim = ax.get_ylim()
-    x_curr = max(min(x0_lim, x1_lim), min(x_curr, max(x0_lim, x1_lim)))
-    y_curr = max(min(y0_lim, y1_lim), min(y_curr, max(y0_lim, y1_lim)))
 
-    # Lazy Copy (Arka planı kopyala)
+    # Eksenler ters olabilir, o yüzden min/max ile sırala
+    x_min_bound, x_max_bound = sorted([x0_lim, x1_lim])
+    y_min_bound, y_max_bound = sorted([y0_lim, y1_lim])
+
+    # Değeri sınırlar içine hapset
+    x_curr = max(x_min_bound, min(x_curr, x_max_bound))
+    y_curr = max(y_min_bound, min(y_curr, y_max_bound))
+
+    # 5. Çizim (Lazy Copy)
     if selection_state["background"] is None:
         canvas.draw()
         selection_state["background"] = canvas.copy_from_bbox(ax.bbox)
@@ -179,7 +194,7 @@ def handle_select_motion(event, selection_state, ax, canvas):
 
     canvas.restore_region(selection_state["background"])
 
-    # Dikdörtgeni çiz
+    # Dikdörtgeni güncelle
     x0, y0 = selection_state["start_pos"]
     width = x_curr - x0
     height = y_curr - y0
@@ -193,7 +208,7 @@ def handle_select_motion(event, selection_state, ax, canvas):
 
 def handle_select_release(event, selection_state, ax, canvas, get_point_key_func, to_plot_coords_func, scatter_points, sector_mode, settings_state):
     """
-    Seçimi tamamlar ve seçili noktaları `selection_state["selected_keys"]` içine atar.
+    Seçimi tamamlar. Mouse dışarıda bırakılsa bile en son kenarı kabul eder.
     """
     if not selection_state["active"]:
         return False
@@ -210,30 +225,45 @@ def handle_select_release(event, selection_state, ax, canvas, get_point_key_func
         canvas.blit(ax.bbox)
         selection_state["background"] = None
 
-    # Bitiş Koordinatları
+    # --- BİTİŞ KOORDİNATINI HESAPLA ---
     x_end, y_end = event.xdata, event.ydata
-    if x_end is None or y_end is None:
-        x_end, y_end = selection_state["start_pos"] # Güvenlik
 
-    # Sınırları Belirle
+    # Eğer mouse dışarıdaysa pikselden hesapla
+    if x_end is None or y_end is None:
+        try:
+            inv = ax.transData.inverted()
+            x_end, y_end = inv.transform((event.x, event.y))
+        except:
+            # Hesaplayamazsa başlangıç noktasına dön (Seçim iptal gibi olur)
+            x_end, y_end = selection_state["start_pos"]
+
+    # Sınırlandırma (Clamping) - Grafiğin dışına taşmasın
+    x0_lim, x1_lim = ax.get_xlim()
+    y0_lim, y1_lim = ax.get_ylim()
+    x_min_bound, x_max_bound = sorted([x0_lim, x1_lim])
+    y_min_bound, y_max_bound = sorted([y0_lim, y1_lim])
+    
+    x_end = max(x_min_bound, min(x_end, x_max_bound))
+    y_end = max(y_min_bound, min(y_end, y_max_bound))
+
+    # --- KUTU SINIRLARI ---
     x_start, y_start = selection_state["start_pos"]
     x_min, x_max = sorted([x_start, x_end])
     y_min, y_max = sorted([y_start, y_end])
 
-    # Tekil Tık mı?
-    xlims = ax.get_xlim(); ylims = ax.get_ylim()
-    diag = ((xlims[1]-xlims[0])**2 + (ylims[1]-ylims[0])**2)**0.5
+    # Tekil Tık Kontrolü (Çok küçük hareketse tek tık say)
+    # (Piksel bazlı değil veri bazlı mesafe, zoom seviyesine göre değişir ama yeterlidir)
+    diag = ((x0_lim-x1_lim)**2 + (y0_lim-y1_lim)**2)**0.5
     dist = ((x_start - x_end)**2 + (y_start - y_end)**2)**0.5
-    is_single_click = (dist < diag * 0.01)
+    is_single_click = (dist < diag * 0.01) 
 
     swap_axes = settings_state.get("swap_axes", False)
     is_sector_avg_mode = (sector_mode == "Sector Avg")
     
-    # --- MANTIK ---
     changed = False
     
     if is_single_click:
-        # Tek tık mantığı
+        # --- TEK TIK MANTIĞI ---
         for sc, sub_df in scatter_points:
             contains, ind = sc.contains(event)
             if contains:
@@ -256,7 +286,7 @@ def handle_select_release(event, selection_state, ax, canvas, get_point_key_func
                 changed = True
                 break
     else:
-        # Kutu seçimi mantığı
+        # --- KUTU SEÇİMİ MANTIĞI ---
         if is_sector_avg_mode:
             for sc, _ in scatter_points:
                 offsets = sc.get_offsets()
@@ -270,31 +300,24 @@ def handle_select_release(event, selection_state, ax, canvas, get_point_key_func
                             selection_state["selected_keys"].add(key)
                             changed = True
         else:
-            # Normal mod (Veri üzerinden gitmek daha sağlıklı ama yavaş olabilir, 
-            # burada scatter_points içindeki sub_df'leri kullanıyoruz)
-            # x_col_name'i dışarıdan almamız zor, o yüzden efektif_mrr vb. tahmin ediyoruz
-            # En sağlıklısı main.py'den x_col adını göndermek olurdu ama şimdilik basit tutalım.
-            
+            # Normal Müşteri Modu
+            # scatter_points içindeki her dataframe'i geziyoruz
             for sc, sub_df in scatter_points:
-                 # Scatter verisi üzerinden gitmek yerine DataFrame üzerinden gidiyoruz
-                 # Çünkü scatter koordinatları zaten çizilmiş.
-                 # Ama hangi nokta hangisi?
-                 # En basiti: sub_df içindeki her satırı tek tek kontrol et.
-                 
                  for _, row in sub_df.iterrows():
-                     # Noktanın koordinatını bul
-                     # Burası biraz kirli: x_col'u bilmiyoruz.
-                     # get_point_key bize (id, x, y) veriyor zaten!
+                     # Noktanın key'ini ve koordinatını bul
                      key = get_point_key_func(row, settings_state)
+                     
+                     # get_point_key (id, x, y) döndürür
                      if isinstance(key, tuple) and len(key) == 3:
                          _, val_x, val_y = key
+                         # Grafik koordinatına çevir (Swap axis varsa diye)
                          px, py = to_plot_coords_func(val_x, val_y, swap_axes)
                          
                          if (x_min <= px <= x_max) and (y_min <= py <= y_max):
                              selection_state["selected_keys"].add(key)
                              changed = True
 
-    return changed   
+    return changed
 
 def handle_focus_shortcut_press(event, settings_state, search_var, keyboard_focus_state, btn_focus_widget, on_focus_press_callback):
     """
@@ -347,4 +370,10 @@ def handle_focus_shortcut_release(event, keyboard_focus_state, btn_focus_widget,
             
             # Single Mode'dan çık
             if on_focus_release_callback:
-                on_focus_release_callback(None)    
+                on_focus_release_callback(None)
+                
+def update_ctrl_state(ctrl_state, is_pressed):
+    """
+    Ctrl tuşunun basılı olup olmadığını günceller.
+    """
+    ctrl_state["pressed"] = is_pressed                
