@@ -33,6 +33,7 @@ from utils import (
     remove_existing_legends
 )
 
+from gui_sidebar import build_sidebar_ui
 from ui_components import (
     set_tooltip, 
     create_collapsible_stat_card, 
@@ -897,62 +898,6 @@ def _on_root_configure(e):
 
 root.bind("<Configure>", _on_root_configure)
 
-# ===== Sağ YAN PANEL =====
-sidebar = ttk.Frame(root)
-sidebar.grid(row=0, column=1, sticky="nsew", padx=(0, 10), pady=10)
-sidebar.grid_rowconfigure(0, weight=1)    
-sidebar.grid_rowconfigure(1, weight=0)    
-sidebar.grid_rowconfigure(2, weight=0)    
-sidebar.grid_columnconfigure(0, weight=1)
-
-# ÜST: Kontroller
-controls_frame = ttk.Frame(sidebar)
-controls_frame.grid(row=0, column=0, sticky="nsew")
-
-# 1. Sektör Seçimi
-lbl_select = tk.Label(controls_frame, text="Select Sector:")
-lbl_select.pack(anchor="w", padx=10, pady=(0, 5))
-
-sector_options = ["Sector Avg"] + list(sectors) + ["All"]
-sector_combobox = ttk.Combobox(controls_frame, values=sector_options, state="readonly")
-sector_combobox.current(0)
-sector_combobox.pack(fill="x", padx=10, pady=(0, 15))
-
-# ---------------------------------------------------------
-# BÖLÜM 1: ACTIVE CUSTOMERS (AKORDİYON KUTU)
-# ---------------------------------------------------------
-# Helper fonksiyonu kullanarak kartı oluşturuyoruz
-# ---------------------------------------------------------
-frame_active_stats, total_label, total_mrr_label, sector_count_label = create_collapsible_stat_card(
-      controls_frame, title_bg="#e6f3ff" # Hafif mavi başlık (Active)
-)
-frame_active_stats.pack(fill="x", padx=10, pady=(0, 10)) # pady 20 yerine 10 yaptık, birbirine yaklaşsın
-
-# ---------------------------------------------------------
-# BÖLÜM 2: CHURN STATISTICS (AKORDİYON KUTU - YENİ İSİMLENDİRME)
-# ---------------------------------------------------------
-# Hemen Active Stats'ın altına ekliyoruz.
-frame_churn_stats, churn_customer_label, churn_total_label, churn_sector_label = create_collapsible_stat_card(
-      controls_frame, title_bg="#ffe6e6" # Hafif kırmızı başlık (Churn)
-)
-# Başlangıçta pack ediyoruz, visibility fonksiyonu yönetse de yerini rezerve edelim
-frame_churn_stats.pack(fill="x", padx=10, pady=(0, 10))
-
-# --- Churn Ratio Label ---
-churn_ratio_label = ttk.Label(
-      controls_frame,
-      text="",
-      font=("Arial", 10, "bold"),
-      foreground="red",
-      justify="center"
-)
-churn_ratio_label.pack(pady=(0, 10))
-
-# ---------------------------------------------------------
-# REFLOW MANTIĞI GÜNCELLEMESİ
-# ---------------------------------------------------------
-# Eski _reflow_right_panel_for_selection fonksiyonu label'ları grid ile yönetiyordu.
-# Artık pack kullanıyoruz ve container yapısı değişti. Bu fonksiyonu basitleştirelim.
 
 def _reflow_right_panel_for_selection(sel: str):
       """
@@ -966,26 +911,19 @@ def _reflow_right_panel_for_selection(sel: str):
       pass  
 
 def _apply_churn_labels_visibility():
-      """Churn kutusunun (frame_churn_stats) görünürlüğünü yönetir."""
-      show = bool(churn_enabled_var.get() or churn_only_var.get())
-       
-      if show:
-            frame_churn_stats.pack(fill="x", padx=10, pady=(0, 10), after=frame_active_stats)
-            # Ratio label'ı da göster
-            try:
-                  if churn_ratio_label.cget("text"):  
-                        churn_ratio_label.pack(pady=(0, 10), after=frame_churn_stats)
-            except: pass
-      else:
-            frame_churn_stats.pack_forget()
-            churn_ratio_label.pack_forget()
-
-# Spacer (En alta itmek için boşluk)
-bottom_spacer = ttk.Frame(controls_frame)
-bottom_spacer.pack(fill="both", expand=True)
-
-
-# =================== NEW/CHURN: Sağ panelde Churn Options ===================
+    """Churn kutusunun (frame_churn_stats) görünürlüğünü yönetir."""
+    show = bool(churn_enabled_var.get() or churn_only_var.get())
+    
+    if show:
+        # İstatistik kartını göster
+        frame_churn_stats.pack(fill="x", padx=10, pady=(0, 10), after=frame_active_stats)
+        
+        # ratio_label ARTIK "churn_frame" İÇİNDE OLDUĞU İÇİN BURADA PACK YAPMIYORUZ.
+        # churn_frame görünüyorsa o da görünür.
+    else:
+        # İstatistik kartını gizle
+        frame_churn_stats.pack_forget()
+            
 def _on_churn_toggle():
       # Eğer şu anda License Exc. ise, Include'ye basınca otomatik Inc.'e dön
       if license_var.get() == "Exc." and churn_enabled_var.get():
@@ -1013,85 +951,65 @@ def _on_only_churn_toggle():
       settings_state["show_only_churn"] = bool(churn_only_var.get())
 
       _apply_churn_labels_visibility()
-      update_plot(sector_combobox.get(), preserve_zoom=False, fit_to_data=True)
-
-
-churn_enabled_var = tk.BooleanVar(value=True)
-churn_only_var     = tk.BooleanVar(value=False)
-
-churn_frame = ttk.LabelFrame(sidebar, text="Churn Options", padding=8)
-churn_frame.grid(row=1, column=0, sticky="sew", padx=10, pady=(0, 6))
-churn_frame.grid_columnconfigure(0, weight=1)
-
-churn_ratio_label = ttk.Label(
-      churn_frame,
-      text="",
-      font=("Arial", 11, "bold"),
-      justify="left"
-)
-churn_ratio_label.grid(row=0, column=0, sticky="w", padx=4, pady=(0, 4))
-
-churn_cb = ttk.Checkbutton(
-      churn_frame,
-      text="Include Churned Customers",
-      variable=churn_enabled_var,
-      command=_on_churn_toggle
-)
-churn_cb.grid(
-      row=1, column=0,
-      sticky="w",
-      padx=4, pady=(0, 2)
-)
-
-churn_only_cb = ttk.Checkbutton(
-      churn_frame,
-      text="Show Only Churned Customers",
-      variable=churn_only_var,
-      command=_on_only_churn_toggle
-)
-churn_only_cb.grid(
-      row=2, column=0,
-      sticky="w",
-      padx=4, pady=(0, 2)
-)
-
-# =================== NEW: ADVANCED ANALYTICS PANEL ===================
-analytics_frame = ttk.LabelFrame(sidebar, text="Advanced Analytics (Beta)", padding=8)
-analytics_frame.grid(row=3, column=0, sticky="sew", padx=10, pady=(10, 6))
-
-# Değişkenler
-an_mode_var = tk.StringVar(value="none")
-an_marginal_var = tk.BooleanVar(value=False)
+      update_plot(sector_combobox.get(), preserve_zoom=False, fit_to_data=True)            
 
 def apply_analytics():
       analytics_state["mode"] = an_mode_var.get()
       analytics_state["show_marginals"] = bool(an_marginal_var.get())
        
       # Eğer Pareto açıksa, koyu tema iyidir ama şimdilik sadece grafiği yenileyelim
-      update_plot(sector_combobox.get(), preserve_zoom=True, fit_to_data=False)
 
-# 1. Marjinal Grafikler (Toggle)
-chk_marg = ttk.Checkbutton(analytics_frame, text="Show Marginal Histograms",  
-                                         variable=an_marginal_var, command=apply_analytics)
-chk_marg.grid(row=0, column=0, sticky="w", padx=2, pady=2)
+churn_enabled_var = tk.BooleanVar(value=True)
+churn_only_var = tk.BooleanVar(value=False)
+an_mode_var = tk.StringVar(value="none")
+an_marginal_var = tk.BooleanVar(value=False)
+sidebar_vars = {
+    "churn_enabled": churn_enabled_var,
+    "churn_only": churn_only_var,
+    "an_mode": an_mode_var,
+    "an_marginal": an_marginal_var
+}
+      
+# ===== Sağ YAN PANEL =====
+sidebar = ttk.Frame(root)
+sidebar.grid(row=0, column=1, sticky="nsew", padx=(0, 10), pady=10)
+sidebar.grid_rowconfigure(0, weight=1)
+sidebar.grid_rowconfigure(1, weight=0)
+sidebar.grid_rowconfigure(2, weight=0)
+sidebar.grid_columnconfigure(0, weight=1)
 
-# 2. Mod Seçimi (Radio Buttons)
-lbl_modes = ttk.Label(analytics_frame, text="AI Analysis Mode:", font=("Segoe UI", 9, "bold"))
-lbl_modes.grid(row=1, column=0, sticky="w", padx=2, pady=(6,2))
+# Callback Fonksiyonlarını Paketle
+sidebar_callbacks = {
+    # Lambda kullanarak fonksiyonun aranmasını "olay gerçekleşene kadar" erteliyoruz
+    "on_sector_change": lambda event: on_sector_change(event), 
+    
+    "on_churn_toggle": _on_churn_toggle,
+    "on_only_churn_toggle": _on_only_churn_toggle,
+    "apply_analytics": apply_analytics
+}
 
-rb_none = ttk.Radiobutton(analytics_frame, text="None (Standard View)", value="none",  
-                                       variable=an_mode_var, command=apply_analytics)
-rb_kmeans = ttk.Radiobutton(analytics_frame, text="K-Means Clustering (3 Groups)", value="kmeans",  
-                                          variable=an_mode_var, command=apply_analytics)
-rb_pareto = ttk.Radiobutton(analytics_frame, text="Pareto Analysis (Top %20)", value="pareto",  
-                                          variable=an_mode_var, command=apply_analytics)
+# gui_sidebar.py içindeki fonksiyonu çağır
+sidebar_widgets = build_sidebar_ui(
+    parent=sidebar,
+    sectors_list=sectors,
+    vars_dict=sidebar_vars,
+    callbacks=sidebar_callbacks,
+    has_sklearn=_HAS_SKLEARN
+)
 
-rb_none.grid(row=2, column=0, sticky="w", padx=10)
-rb_kmeans.grid(row=3, column=0, sticky="w", padx=10)
-rb_pareto.grid(row=4, column=0, sticky="w", padx=10)
+# Widget Referanslarını Global Değişkenlere Geri Yükle
+sector_combobox = sidebar_widgets["sector_combobox"]
+frame_active_stats = sidebar_widgets["frame_active_stats"]
+total_label = sidebar_widgets["total_label"]
+total_mrr_label = sidebar_widgets["total_mrr_label"]
+sector_count_label = sidebar_widgets["sector_count_label"]
 
-if not _HAS_SKLEARN:
-      rb_kmeans.configure(state="disabled", text="K-Means (sklearn not found)")
+frame_churn_stats = sidebar_widgets["frame_churn_stats"]
+churn_customer_label = sidebar_widgets["churn_customer_label"]
+churn_total_label = sidebar_widgets["churn_total_label"]
+churn_sector_label = sidebar_widgets["churn_sector_label"]
+churn_ratio_label = sidebar_widgets["churn_ratio_label"]
+controls_frame = sidebar_widgets["controls_frame"]
 # =====================================================================
 # ================================================================================================
 
