@@ -13,6 +13,10 @@ except Exception:
       DateEntry = None
       _HAS_TKCALENDAR = False   # Yüklü değilse fallback olarak Entry kullanılacak
 
+_layout_timer = None
+_prev_cfg_width = 0
+_prev_cfg_height = 0      
+
 from settings_window import show_settings_window      
 from data_ops import load_and_clean_data, tr_lower, CHURN_COL, CHURNED_MRR_COL, EFFECTIVE_MRR_COL, RISK_COL, CURRENT_MRR_COL, BASE_MRR_FALLBACK_COL, get_point_key, get_limit_removed_keys, is_risk_allowed, apply_churn_filters, apply_age_filters, get_growth_source_col_for_age_mode, get_base_mrr_col_for_age_mode, get_exc_mrr_col_for_age_mode, is_risk_view_active, calculate_churn_stats, get_visible_customer_names, get_plot_x_col, get_updated_y_col_if_any
 from export_manager import run_export_workflow
@@ -54,6 +58,8 @@ from interactions import (
     handle_focus_shortcut_release,
     update_ctrl_state
 )
+
+_resize_timer = None
 
 CHURN_X_COLOR = 'red' 
 CHURN_DATE_COL = 'Churn Date'
@@ -882,22 +888,54 @@ def _position_zoom_button():
 
 root.after_idle(_position_zoom_button)
 
-def _on_root_configure(e):
-      if 'settings_state' not in globals():
-            return
-
-      update_fixed_banner()
-      if settings_state.get("activate_search_box", False):
+def _perform_delayed_layout():
+    """Layout işlemlerini güvenli bir şekilde yapar."""
+    global _layout_timer
+    _layout_timer = None  # Timer sıfırla
+    
+    if 'settings_state' not in globals():
+        return
+        
+    # Sadece ve sadece bu fonksiyon çalıştığında yerleştirme yap
+    try:
+        update_fixed_banner()
+        if settings_state.get("activate_search_box", False):
             _position_search_frame()
-      _position_zoom_button()
-       
-      # --- BURASI ÖNEMLİ ---
-      # Sadece toggle fonksiyonunu çağırıyoruz.  
-      # O fonksiyon gerekli kontrolleri yapıp gizlemesi gerekiyorsa gizleyecek.
-      toggle_regression_buttons_visibility()
+        _position_zoom_button()
+        toggle_regression_buttons_visibility()
+    except Exception:
+        pass
 
-root.bind("<Configure>", _on_root_configure)
+def _on_root_configure(e):
+    """
+    Pencere boyutu değişimini kontrol eder.
+    Sonsuz döngüyü ve titremeyi engelleyen filtreler içerir.
+    """
+    global _layout_timer, _prev_cfg_width, _prev_cfg_height
+    
+    # 1. FİLTRE: Olay ana pencereden (root) gelmiyorsa YOK SAY.
+    # Bu, Handbook içindeki resimlerin main.py'yi tetiklemesini engeller.
+    if str(e.widget) != ".":  # Tkinter'da ana pencerenin adı her zaman "." dır.
+        return
 
+    # 2. FİLTRE: Boyut gerçekten değişmediyse YOK SAY.
+    # (Titremenin en büyük sebebi: Piksel değişmese bile olayın tetiklenmesidir)
+    if e.width == _prev_cfg_width and e.height == _prev_cfg_height:
+        return
+        
+    # Yeni boyutları kaydet
+    _prev_cfg_width = e.width
+    _prev_cfg_height = e.height
+
+    # 3. ZAMANLAYICI İPTALİ (Oluşan hatayı çözen kısım)
+    # Eğer halihazırda bekleyen bir işlem varsa iptal et.
+    if _layout_timer is not None:
+        root.after_cancel(_layout_timer)
+    
+    # 4. GECİKTİRME (Debounce)
+    # İşlemi hemen yapma, 100ms bekle. Eğer bu süre içinde tekrar olay gelirse
+    # yukarıdaki iptal çalışır. Böylece saniyede 100 kere değil, 1 kere çalışır.
+    _layout_timer = root.after(100, _perform_delayed_layout)
 
 def _reflow_right_panel_for_selection(sel: str):
       """

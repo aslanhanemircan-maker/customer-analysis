@@ -88,12 +88,11 @@ def open_handbook(root_window):
     handbook_win_ref = hb_win
     
     hb_win.title("Analitik Düzlem & Kullanım Kılavuzu")
-    hb_win.transient(root_window)
     
     # Pencereyi ortala
     center_on_screen(hb_win, 1000, 800)
 
-    hb_win.bind("<Escape>", lambda e: hb_win.destroy())
+    hb_win.bind("<Escape>", lambda e: hb_win.destroy() if hb_win.winfo_exists() else None)
 
     # --- Stiller ---
     style = ttk.Style()
@@ -121,7 +120,10 @@ def open_handbook(root_window):
                       font=("Segoe UI", 10), bg="white", relief="flat",
                       border=0, highlightthickness=0,
                       yscrollcommand=scrollbar.set,
-                      cursor="arrow")  
+                      cursor="arrow",
+                      insertontime=0,   
+                      insertofftime=0,
+                      insertwidth=0)
         
         txt.grid(row=0, column=1, sticky="nsew", padx=0, pady=20)
         
@@ -217,8 +219,11 @@ def open_handbook(root_window):
                 container = tk.Frame(txt, bg="white", bd=0)  
 
                 # 2. Header
-                header_frame = tk.Frame(container, bg="#f8f9fa", height=40, cursor="hand2")
-                header_frame.pack(fill="x", expand=True)
+                header_frame = tk.Frame(container, bg="#f8f9fa", cursor="hand2")
+                
+                # expand=False yaptık ki Text widget'ı ile yer kavgası etmesin (Titremeyi çözer)
+                # fill="x" yaptık ki genişliği tam kaplasın.
+                header_frame.pack(fill="x", expand=False)
                 
                 stripe = tk.Frame(header_frame, bg="#1f77b4", width=4)
                 stripe.pack(side="left", fill="y")
@@ -227,8 +232,10 @@ def open_handbook(root_window):
                                       text=f"▶   Görseli Göster: {caption_text}",  
                                       font=("Segoe UI", 10, "bold"),
                                       bg="#f8f9fa", fg="#495057",
-                                      anchor="w", padx=10, pady=10)
-                header_lbl.pack(side="left", fill="x", expand=True)
+                                      anchor="w", padx=10, pady=8) # pady makul seviyede
+                
+                # Label'ı header_frame içine tam yayıyoruz
+                header_lbl.pack(side="left", fill="both", expand=True)
 
                 # 3. Content Frame
                 content_frame = tk.Frame(container, bg="white", pady=10)
@@ -280,11 +287,6 @@ def open_handbook(root_window):
                         h_lbl.config(text=f"▼   Görseli Gizle: {txt_cap}", bg="#e7f5ff", fg="#1f77b4")
                         header_frame.config(bg="#e7f5ff")
                     
-                    # Sadece boyutları güncelle, ama txt.see() YAPMA!
-                    # txt.see() ekranı zorla kaydırdığı için zıplama yapar.
-                    # update_idletasks yeterlidir, içerik doğal olarak aşağı itilir.
-                    c_frame.update_idletasks()  
-                    cont.update_idletasks()
                     
                     # Düzeltme: Focus'u pencerede tut
                     txt.focus_set()
