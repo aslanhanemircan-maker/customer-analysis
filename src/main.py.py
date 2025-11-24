@@ -1335,12 +1335,13 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                               
                               # 3. Y Ekseni (Growth) Değişimi Var mı?
                               old_avg_raw_y = sd['MRR Growth (%)'].astype(float).mean()
-                              
-                              updated_y_col = get_updated_y_col_if_any()
+
+                              # DÜZELTME: Fonksiyona (df) parametresi eklendi
+                              updated_y_col = get_updated_y_col_if_any(df) 
                               if updated_y_col and updated_y_col in sd.columns:
-                                    new_avg_raw_y = sd[updated_y_col].astype(float).mean()
+                                  new_avg_raw_y = sd[updated_y_col].astype(float).mean()
                               else:
-                                    new_avg_raw_y = avg_y # Değişmediyse aynısı
+                                  new_avg_raw_y = avg_y # Değişmediyse aynısı
 
                               # 4. Koordinatları Hesapla (Swap Axes durumuna göre)
                               p0x, p0y = to_plot_coords(old_avg_raw_x, old_avg_raw_y, settings_state.get("swap_axes", False))
@@ -1575,112 +1576,103 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
                         # =================================================================
 
                         if show_arrows_flag:
-                              old_px, old_py, new_px = [], [], []
-                              for _, r in sd.iterrows():
+                            old_px, old_py, new_px = [], [], []
+                            for _, r in sd.iterrows():
+                                try:
+                                    x0 = float(r[base_col_for_arrow])
+                                    x1 = float(r['Exc. License MRR'])
+                                    y = float(r['MRR Growth (%)'])
+                                except Exception:
+                                    continue
+                                
+                                p0x, p0y = to_plot_coords(x0, y, settings_state.get("swap_axes", False))
+                                p1x, p1y = to_plot_coords(x1, y, settings_state.get("swap_axes", False))
+                                old_px.append(p0x); old_py.append(p0y); new_px.append(p1x)
+                                
+                                extra_points_for_fit.append((p0x, p0y))
+                                extra_points_for_fit.append((p1x, p1y))
+            
+                                # FIX 1: df eklendi
+                                if get_updated_y_col_if_any(df) is not None:
                                     try:
-                                          x0 = float(r[base_col_for_arrow])
-                                          x1 = float(r['Exc. License MRR'])
-                                          y = float(r['MRR Growth (%)'])
+                                        # FIX 2: df eklendi
+                                        y_new = float(r[get_updated_y_col_if_any(df)])
+                                        
+                                        # FIX 3: get_plot_x_col() yerine x_col kullanıldı (HATA BURADAYDI)
+                                        x_for_y = float(r[x_col])
+                                        
+                                        q0x, q0y = to_plot_coords(x_for_y, y, settings_state.get("swap_axes", False))
+                                        q1x, q1y = to_plot_coords(x_for_y, y_new, settings_state.get("swap_axes", False))
+                                        extra_points_for_fit.append((q0x, q0y))
+                                        extra_points_for_fit.append((q1x, q1y))
+                                        
+                                        ann2 = ax.annotate(
+                                            "", xy=(q1x, q1y), xytext=(q0x, q0y),
+                                            arrowprops=dict(arrowstyle="->", lw=0.8, alpha=0.45, clip_on=True)
+                                        )
+                                        ann2.set_clip_on(True)
+                                        if hasattr(ann2, "arrow_patch") and ann2.arrow_patch:
+                                            ann2.arrow_patch.set_clip_on(True)
                                     except Exception:
-                                          continue
-                                    p0x, p0y = to_plot_coords(x0, y, settings_state.get("swap_axes", False))
-                                    p1x, p1y = to_plot_coords(x1, y, settings_state.get("swap_axes", False))
-                                    old_px.append(p0x); old_py.append(p0y); new_px.append(p1x)
+                                        pass
+            
+                            if old_px:
+                                ax.scatter(old_px, old_py, color=color_map.get(sector, 'gray'), s=60, alpha=0.35,
+                                        edgecolors='none', zorder=3, label="_nolegend_", clip_on=True)
+                                for p0x, p0y, p1x in zip(old_px, old_py, new_px):
+                                    if abs(p0x - p1x) > 0.0001:
+                                        ann = ax.annotate(
+                                            "", xy=(p1x, p0y), xytext=(p0x, p0y),
+                                            arrowprops=dict(arrowstyle="->", lw=0.9, alpha=0.5, clip_on=True)
+                                        )
+                                        ann.set_clip_on(True)
+                                        if hasattr(ann, "arrow_patch") and ann.arrow_patch:
+                                            ann.arrow_patch.set_clip_on(True)
+            
+                        if selected_sector != "All":
+                            sd_for_avg = visible_df_base[visible_df_base['Company Sector'] == selected_sector]
+                            if len(sd_for_avg) > 0:
+                                try:
+                                    avg_x_now = sd_for_avg[x_col].astype(float).mean()
+                                except Exception:
+                                    avg_x_now = sd_for_avg[EFFECTIVE_MRR_COL].astype(float).mean()
+            
+                                # FIX 4: Burada (df) eksikti, ekledik.
+                                if show_arrows_flag and (get_updated_y_col_if_any(df) is not None):
+                                    avg_y_now = sd_for_avg[get_updated_y_col_if_any(df)].astype(float).mean()
+                                else:
+                                    avg_y_now = sd_for_avg['MRR Growth (%)'].astype(float).mean()
+                                    
+                                pax, pay = to_plot_coords(avg_x_now, avg_y_now, settings_state.get("swap_axes", False))
+                                avg_color = 'navy'
+                                sc = ax.scatter(pax, pay, color=avg_color, s=300, marker='o',
+                                                edgecolors='black', label=f"{selected_sector} Avg", zorder=3, clip_on=True)
+                                scatter_points.append((sc, sd_for_avg))
+            
+                                if show_arrows_flag:
+                                    if base_col_for_arrow in sd_for_avg.columns:
+                                        old_avg_x = sd_for_avg[base_col_for_arrow].astype(float).mean()
+                                    else:
+                                        old_avg_x = avg_x_now
+                                    old_avg_y = sd_for_avg['MRR Growth (%)'].astype(float).mean()
+                                    p0x, p0y = to_plot_coords(old_avg_x, old_avg_y, settings_state.get("swap_axes", False))
+                                    p1x, p1y = pax, pay
                                     extra_points_for_fit.append((p0x, p0y))
                                     extra_points_for_fit.append((p1x, p1y))
-
-                                    if get_updated_y_col_if_any(df) is not None:
-                                          try:
-                                                y_new = float(r[get_updated_y_col_if_any(df)])
-                                                x_for_y = float(r[get_plot_x_col()])
-                                                q0x, q0y = to_plot_coords(x_for_y, y, settings_state.get("swap_axes", False))
-                                                q1x, q1y = to_plot_coords(x_for_y, y_new, settings_state.get("swap_axes", False))
-                                                extra_points_for_fit.append((q0x, q0y))
-                                                extra_points_for_fit.append((q1x, q1y))
-                                          except Exception:
-                                                pass
-
-                              if old_px:
-                                    ax.scatter(old_px, old_py, color=color_map[sector], s=60, alpha=0.35,
-                                                     edgecolors='none', zorder=3, label="_nolegend_", clip_on=True)
-                                    for p0x, p0y, p1x in zip(old_px, old_py, new_px):
-                                          if p0x != p1x:
-                                                ann = ax.annotate(
-                                                      "", xy=(p1x, p0y), xytext=(p0x, p0y),
-                                                      arrowprops=dict(arrowstyle="->", lw=0.9, alpha=0.5, clip_on=True)
-                                                )
-                                                try:
-                                                      ann.set_clip_on(True)
-                                                      if hasattr(ann, "arrow_patch") and ann.arrow_patch is not None:
-                                                            ann.arrow_patch.set_clip_on(True)
-                                                except Exception:
-                                                      pass
-
-                              if get_updated_y_col_if_any() is not None:
-                                    for _, r in sd.iterrows():
-                                          try:
-                                                y_old = float(r['MRR Growth (%)'])
-                                                y_new = float(r[get_updated_y_col_if_any()])
-                                                if y_old != y_new:
-                                                      x_for_y_arrow = float(r[x_col])
-                                                      q0x, q0y = to_plot_coords(x_for_y_arrow, y_old, settings_state.get("swap_axes", False))
-                                                      q1x, q1y = to_plot_coords(x_for_y_arrow, y_new, settings_state.get("swap_axes", False))
-                                                      ann2 = ax.annotate(
-                                                            "", xy=(q1x, q1y), xytext=(q0x, q0y),
-                                                            arrowprops=dict(arrowstyle="->", lw=0.8, alpha=0.45, clip_on=True)
-                                                      )
-                                                      try:
-                                                            ann2.set_clip_on(True)
-                                                            if hasattr(ann2, "arrow_patch") and ann2.arrow_patch is not None:
-                                                                  ann2.arrow_patch.set_clip_on(True)
-                                                      except Exception:
-                                                            pass
-                                          except Exception:
-                                                pass
-
-            if selected_sector != "All":
-                  # AVG noktası, *filtresiz* visible_df_base'e göre hesaplanmalı
-                  sd_for_avg = visible_df_base[visible_df_base['Company Sector'] == selected_sector]
-                  if len(sd_for_avg) > 0:
-                        try:
-                              avg_x_now = sd_for_avg[x_col].astype(float).mean()
-                        except Exception:
-                              avg_x_now = sd_for_avg[EFFECTIVE_MRR_COL].astype(float).mean()
-
-                        if show_arrows_flag and (get_updated_y_col_if_any() is not None):
-                              avg_y_now = sd_for_avg[get_updated_y_col_if_any()].astype(float).mean()
-                        else:
-                              avg_y_now = sd_for_avg['MRR Growth (%)'].astype(float).mean()
-                        pax, pay = to_plot_coords(avg_x_now, avg_y_now, settings_state.get("swap_axes", False))
-                        avg_color = 'navy'
-                        sc = ax.scatter(pax, pay, color=avg_color, s=300, marker='o',
-                                                edgecolors='black', label=f"{selected_sector} Avg", zorder=3, clip_on=True)
-                        scatter_points.append((sc, sd_for_avg))
-
-                        if show_arrows_flag:
-                              if base_col_for_arrow in sd_for_avg.columns:
-                                    old_avg_x = sd_for_avg[base_col_for_arrow].astype(float).mean()
-                              else:
-                                    old_avg_x = avg_x_now
-                              old_avg_y = sd_for_avg['MRR Growth (%)'].astype(float).mean()
-                              p0x, p0y = to_plot_coords(old_avg_x, old_avg_y, settings_state.get("swap_axes", False))
-                              p1x, p1y = pax, pay
-                              extra_points_for_fit.append((p0x, p0y))
-                              extra_points_for_fit.append((p1x, p1y))
-
-                              ax.scatter([p0x], [p0y], color=avg_color, s=300, alpha=0.35,
-                                               edgecolors='none', zorder=5, label="_nolegend_", clip_on=True)
-                              if (p0x != p1x) or (p0y != p1y):
-                                    ann_avg = ax.annotate(
-                                          "", xy=(p1x, p1y), xytext=(p0x, p0y),
-                                          arrowprops=dict(arrowstyle="->", lw=1.0, alpha=0.5, clip_on=True)
-                                    )
-                                    try:
-                                          ann_avg.set_clip_on(True)
-                                          if hasattr(ann_avg, "arrow_patch") and ann_avg.arrow_patch is not None:
+            
+                                    ax.scatter([p0x], [p0y], color=avg_color, s=300, alpha=0.35,
+                                                edgecolors='none', zorder=5, label="_nolegend_", clip_on=True)
+                                    if (p0x != p1x) or (p0y != p1y):
+                                        ann_avg = ax.annotate(
+                                            "", xy=(p1x, p1y), xytext=(p0x, p0y),
+                                            arrowprops=dict(arrowstyle="->", lw=1.0, alpha=0.5, clip_on=True)
+                                        )
+                                        try:
+                                            ann_avg.set_clip_on(True)
+                                            if hasattr(ann_avg, "arrow_patch") and ann_avg.arrow_patch is not None:
                                                 ann_avg.arrow_patch.set_clip_on(True)
-                                    except Exception:
-                                          pass
+                                        except Exception:
+                                            pass
 
       # --- Merkez çizgileri ---
       ax.axvline(plot_cx, color='dodgerblue', linewidth=2, zorder=2)
