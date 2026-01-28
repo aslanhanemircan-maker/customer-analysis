@@ -63,7 +63,8 @@ _resize_timer = None
 
 CHURN_X_COLOR = 'red' 
 CHURN_DATE_COL = 'Churn Date'
-
+current_visible_df = None  # Grafikte o an çizili olan verinin kopyası
+current_avg_keys = set()   # Avg noktalarının key'lerini tutmak için (Ayırt etmek adına)
 # --- GLOBAL TOOLTIP YÖNETİCİSİ ---
 _tt_win = None
 _tt_lbl = None
@@ -1035,12 +1036,43 @@ sidebar_widgets = build_sidebar_ui(
     has_sklearn=_HAS_SKLEARN
 )
 
+def disable_analytics_ui(parent_widget):
+    """Analytics çerçevesini bulup içindeki her şeyi disable yapar."""
+    # Sidebar içindeki çocukları (Frame'leri) geziyoruz
+    for child in parent_widget.winfo_children():
+        try:
+            # LabelFrame veya Frame olup olmadığına bakıyoruz
+            # Genelde Analytics kısmı bir LabelFrame içindedir.
+            # Başlığı "Advanced Analytics" ise hedefimiz odur.
+            if isinstance(child, ttk.LabelFrame):
+                if "Analytics" in str(child.cget("text")):
+                    # Bu frame içindeki TÜM widget'ları disable yap
+                    for widget in child.winfo_children():
+                        try:
+                            widget.configure(state="disabled")
+                        except:
+                            pass
+                    return # Bulduk ve yaptık, çıkabiliriz.
+        except:
+            pass
+
+# Sidebar oluşturulduktan hemen sonra bu fonksiyonu çağırıyoruz
+root.after(100, lambda: disable_analytics_ui(sidebar))
+
 # Widget Referanslarını Global Değişkenlere Geri Yükle
 sector_combobox = sidebar_widgets["sector_combobox"]
 frame_active_stats = sidebar_widgets["frame_active_stats"]
 total_label = sidebar_widgets["total_label"]
 total_mrr_label = sidebar_widgets["total_mrr_label"]
 sector_count_label = sidebar_widgets["sector_count_label"]
+selection_info_label = ttk.Label(
+    frame_active_stats, 
+    text="", 
+    font=("Segoe UI", 9, "bold"), 
+    foreground="black", # Turuncu tonu (dikkat çekmesi için)
+    justify="center"
+)
+selection_info_label.pack(side="top", fill="x", pady=(0, 5), before=sidebar_widgets["total_label"])
 
 frame_churn_stats = sidebar_widgets["frame_churn_stats"]
 churn_customer_label = sidebar_widgets["churn_customer_label"]
@@ -1078,6 +1110,111 @@ undo_stack = []
 # =====================================================
 # Çizim / etkileşim
 # =====================================================
+
+def update_sidebar_statistics(target_df, custom_header=None):
+    """
+    Verilen dataframe'e (target_df) göre yan paneldeki istatistikleri günceller.
+    Breakdown listeleri sadece seçili veriyi yansıtacak şekilde düzeltildi.
+    """
+    # 1. Toplam Sayılar (Seçili Veri İçin)
+    count = len(target_df)
+    mrr_val = 0.0
+    
+    if EFFECTIVE_MRR_COL in target_df.columns:
+        mrr_val = target_df[EFFECTIVE_MRR_COL].astype(float).sum()
+
+    prefix = "Selected" if custom_header else "Total"
+    
+    total_label.config(text=f"{prefix} Customers: {count}", fg="black")
+    total_mrr_label.config(text=f"{prefix} Customer MRR Value: ${mrr_val:,.0f}")
+
+    # 2. Sektör Dağılımı (Selected Customers Breakdown)
+    if mrr_val > 0:
+        sector_entries = []
+        # Sadece elimizdeki (seçili) veriyi grupluyoruz. 
+        # Böylece seçilmeyen sektörler buraya asla girmez.
+        grouped = target_df.groupby('Company Sector')
+        for sec, sd in grouped:
+            c = len(sd)
+            try: s_mrr = sd[EFFECTIVE_MRR_COL].astype(float).sum()
+            except: s_mrr = 0
+            
+            # Pay (Share): Bu sektör, toplam seçimin yüzde kaçı?
+            if c > 0:
+                share = (s_mrr / mrr_val) * 100.0
+                sector_entries.append((share, sec, c))
+        
+        sector_entries.sort(key=lambda t: t[0], reverse=True)
+        lines = [f"{sec}: {c} ({share:.1f}%)" for (share, sec, c) in sector_entries[:15]]
+        sector_count_label.config(text="\n".join(lines))
+    else:
+        sector_count_label.config(text="")
+
+    # 3. CHURN İSTATİSTİKLERİ VE BREAKDOWN DÜZELTMESİ
+    show_churn_stats = settings_state.get("churn_enabled", True) or settings_state.get("show_only_churn", False)
+    
+    if show_churn_stats and CHURN_COL in target_df.columns:
+        # A) Seçili veri içindeki CHURN olanları ayıkla
+        is_churn_mask = target_df[CHURN_COL].astype(str).str.upper() == "CHURN"
+        churn_df = target_df[is_churn_mask] # Sadece churn olan satırlar
+        
+        sel_churn_cnt = len(churn_df)
+        sel_churn_mrr = churn_df[EFFECTIVE_MRR_COL].astype(float).sum() if not churn_df.empty else 0.0
+        
+        # Seçili toplam MRR (Ratio hesabı için)
+        sel_total_mrr = mrr_val 
+        
+        # B) Label Güncellemeleri
+        churn_customer_label.config(text=f"{prefix} Customer Churn: {sel_churn_cnt}")
+        
+        if sel_churn_mrr > 0 or sel_churn_cnt > 0:
+            churn_total_label.config(text=f"{prefix} Churn MRR Value: ${sel_churn_mrr:,.0f}")
+        else:
+            churn_total_label.config(text=f"{prefix} Churn MRR: $0")
+            
+        if sel_total_mrr > 0:
+            sel_ratio = (sel_churn_mrr / sel_total_mrr) * 100.0
+            churn_ratio_label.config(text=f"{prefix} Churn Ratio: {sel_ratio:.1f}%")
+            try: churn_ratio_label.pack(pady=(0, 10), after=frame_churn_stats)
+            except: pass
+        else:
+            churn_ratio_label.pack_forget()
+
+        # C) CHURN BREAKDOWN LİSTESİ (DÜZELTİLDİ)
+        # Eğer hiç churn yoksa listeyi temizle
+        if sel_churn_cnt == 0:
+            churn_sector_label.config(text="")
+        else:
+            churn_sec_entries = []
+            
+            # Sadece seçili alandaki churn'leri grupla
+            churn_grouped = churn_df.groupby('Company Sector')
+            
+            for sec, sd in churn_grouped:
+                cnt = len(sd) # O sektördeki churn adedi
+                sec_c_mrr = sd[EFFECTIVE_MRR_COL].astype(float).sum() # O sektördeki churn MRR
+                
+                # İsteğine göre hesap:
+                # "Seçilen Toplam Churn içinde bu sektörün payı nedir?"
+                # Tek sektör seçtiysen pay %100 olur.
+                if sel_churn_mrr > 0:
+                    share_of_churn = (sec_c_mrr / sel_churn_mrr) * 100.0
+                else:
+                    share_of_churn = 0.0
+                
+                churn_sec_entries.append((share_of_churn, sec, cnt))
+            
+            # Sıralama ve Yazdırma
+            churn_sec_entries.sort(key=lambda t: t[0], reverse=True)
+            clines = [f"{sec}: {c} ({r:.1f}%)" for (r, sec, c) in churn_sec_entries[:15]]
+            churn_sector_label.config(text="\n".join(clines))
+            
+    else:
+        # Churn kapalıysa temizle
+        churn_customer_label.config(text="")
+        churn_total_label.config(text="")
+        churn_ratio_label.pack_forget()
+        churn_sector_label.config(text="")
 
 def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
       global last_annotation, center_x, center_y
@@ -1153,24 +1290,28 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
 
       # ============== NEW/AGE: yaş filtresi & yaşa göre kolon seçimi ==============
       visible_df_base = apply_age_filters(visible_df_base, settings_state)
-      stats_df = apply_age_filters(stats_df, settings_state)
+      
+      # DİKKAT: stats_df'i burada oluşturmuyoruz! Aşağıya taşıdık.
 
       age_growth_col = get_growth_source_col_for_age_mode(settings_state, df.columns)
       if age_growth_col in visible_df_base.columns:
             visible_df_base['MRR Growth (%)'] = visible_df_base[age_growth_col].astype(float) * 100.0
-            if age_growth_col in stats_df.columns:
-                  stats_df['MRR Growth (%)'] = stats_df[age_growth_col].astype(float) * 100.0
 
       age_base_mrr_col = get_base_mrr_col_for_age_mode(settings_state, df.columns)
       if age_base_mrr_col in visible_df_base.columns:
             visible_df_base[EFFECTIVE_MRR_COL] = visible_df_base[age_base_mrr_col].astype(float)
-            if age_base_mrr_col in stats_df.columns:
-                  stats_df[EFFECTIVE_MRR_COL] = stats_df[age_base_mrr_col].astype(float)
 
       # churn ise MRR'i Churned MRR ile değiştir
       if (CHURN_COL in visible_df_base.columns) and (CHURNED_MRR_COL in visible_df_base.columns):
             churn_mask_loc = visible_df_base[CHURN_COL].astype(str).str.upper().eq("CHURN")
             visible_df_base.loc[churn_mask_loc, EFFECTIVE_MRR_COL] = visible_df_base.loc[churn_mask_loc, CHURNED_MRR_COL].astype(float)
+
+      # =====================================================================
+      # KRİTİK DÜZELTME: stats_df'i BURADA OLUŞTURUYORUZ
+      # Böylece grafikte çizilen (visible_df_base) ile istatistik verisi (stats_df)
+      # birebir aynı oluyor. Churn müşterileri artık doğru koordinatta.
+      # =====================================================================
+      stats_df = visible_df_base.copy()
 
       # Exc. License MRR’i yaş moduna göre doldur (Exc. görünümünde kullanılacak)
       exc_src = get_exc_mrr_col_for_age_mode(settings_state)
@@ -2084,6 +2225,52 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
             except Exception as e:
                   print(f"Marginal Plot Error: {e}")
       # -----------------------------------------------
+          # --- YENİ: Global Veriyi Güncelle ---
+      global current_visible_df, current_avg_keys
+      
+      # DÜZELTME: Eğer tek bir sektör seçiliyse, istatistiklerin kaynağı olan
+      # current_visible_df'i de o sektöre göre filtrele.
+      if selected_sector not in ("Sector Avg", "All"):
+          current_visible_df = stats_df[stats_df['Company Sector'] == selected_sector].copy()
+          
+          # Risk filtresi varsa onu da tekrar uygula (Garanti olsun)
+          if is_risk_view_active(selected_sector, df.columns, settings_state) and (RISK_COL in current_visible_df.columns):
+               current_visible_df = current_visible_df[
+                   current_visible_df[RISK_COL].astype(str).str.upper().apply(lambda v: is_risk_allowed(v, settings_state))
+               ]
+      else:
+          # Avg veya All seçiliyse tüm veriyi kullan
+          current_visible_df = stats_df.copy()
+
+      current_avg_keys.clear()
+    
+        # Avg noktalarının Key'lerini kaydet (Seçimde ayırt etmek için)
+        # Scatter points içinde dolaşıp Avg olanları buluyoruz
+      for sc, _ in scatter_points:
+            lbl = sc.get_label() or ""
+            if lbl.endswith(" Avg"):
+                # Koordinatları alıp key oluşturuyoruz (seçim mantığıyla aynı key olmalı)
+                offsets = sc.get_offsets()
+                if len(offsets) > 0:
+                    px, py = offsets[0]
+                    # Eksen takası varsa key oluştururken dikkat (genelde to_plot_coords dönüşü kullanılır)
+                    # handle_select_release'de kullanılan key yapısı neyse o olmalı.
+                    # Genelde: (x_val, y_val) veya özel string.
+                    # Burada basitleştirilmiş bir yaklaşım kullanacağız, draw_selection_highlights içinde çözeceğiz.
+                    pass 
+    
+        # --- YENİ: İstatistikleri Normal Modda Güncelle ---
+        # Eğer seçim yoksa, tüm visible_df üzerinden istatistik bas
+      if not selection_state["selected_keys"]:
+            update_sidebar_statistics(current_visible_df, custom_header=None)
+            selection_info_label.config(text="") # Seçim yazısını temizle
+            selection_info_label.pack_forget()   # Yer kaplamasın
+      else:
+          # Seçim varsa, seçimi tekrar uygula (Auto-zoom vs. sonrası)
+          draw_selection_highlights()
+    
+      canvas.draw_idle()
+      update_fixed_banner()
 
       canvas.draw_idle()
       update_fixed_banner()
@@ -2390,11 +2577,15 @@ def on_press(event):
     # Ctrl durumu
     is_ctrl = ctrl_state["pressed"]
     
-    # Seçim varsa temizle (Görsel temizlik)
-    if selection_state["selected_keys"]:
-        selection_state["selected_keys"].clear()
-        clear_selection_visuals()
-        # draw_idle yapmıyoruz, pan başlayınca çizilir
+    # --- DÜZELTME BURADA ---
+    # Eğer Ctrl BASILI DEĞİLSE eski seçimi temizle.
+    # Ctrl basılıysa temizleme ki üzerine ekleyebilelim.
+    if not is_ctrl:
+        if selection_state["selected_keys"]:
+            selection_state["selected_keys"].clear()
+            clear_selection_visuals()
+            # draw_idle yapmıyoruz, pan/select başlayınca çizilir
+    # -----------------------
 
     # Interactions modülüne devret
     started = handle_pan_press(event, pan_state, is_ctrl, False, ax)
@@ -2887,80 +3078,129 @@ def clear_selection_visuals():
       selection_state["highlight_artists"].clear()
 
 def draw_selection_highlights():
-      """Seçili noktaların/sektörlerin etrafına glow efekti çizer."""
-      clear_selection_visuals()
-       
-      if not selection_state["selected_keys"]:
-            canvas.draw_idle()
-            return
+    """
+    Seçili alanın görselini çizer ve istatistikleri günceller.
+    Churn noktaları (X) dahil tüm seçili müşterileri sağ panele yansıtır.
+    """
+    clear_selection_visuals()
+    
+    selected_keys = selection_state["selected_keys"]
+    
+    # --- 1. SEÇİM YOKSA ---
+    if not selected_keys:
+        if current_visible_df is not None:
+             update_sidebar_statistics(current_visible_df, custom_header=None)
+        
+        selection_info_label.config(text="")
+        selection_info_label.pack_forget()
+        canvas.draw_idle()
+        return
 
-      xs, ys = [], []
-       
-      is_sector_avg_mode = (sector_combobox.get() == "Sector Avg")
+    # --- 2. SEÇİM VARSA ---
+    
+    xs, ys = [], []
+    subset_df = None
+    
+    # Label sayaçları
+    display_avg_count = 0
+    display_cust_count = 0
+    
+    is_sector_avg_mode = (sector_combobox.get() == "Sector Avg")
 
-      if is_sector_avg_mode:
-            # Sector Avg modundaysak, seçili KEY'ler "SEC_AVG|..." formatındadır.
-            for sc, _ in scatter_points:
-                  lbl = sc.get_label()
-                  if lbl.endswith(" Avg"):
-                        sec_name = lbl.replace(" Avg", "")
-                        key = f"SEC_AVG|{sec_name}"
-                         
-                        if key in selection_state["selected_keys"]:
-                              # Koordinatı al
-                              off = sc.get_offsets()[0]
-                              xs.append(off[0])
-                              ys.append(off[1])
-      else:
-            # Normal Mod
-            for item in selection_state["selected_keys"]:
-                  # Güvenlik: Yanlış moddan kalan key varsa atla
-                  if isinstance(item, str) and item.startswith("SEC_AVG|"):
-                        continue
-                   
-                  # ID'yi yut, X ve Y'yi al
-                  if len(item) == 3:
-                        _, raw_x, raw_y = item
-                  else:
-                        raw_x, raw_y = item
-                        
-                  px, py = to_plot_coords(raw_x, raw_y, settings_state.get("swap_axes", False))
-                  xs.append(px)
-                  ys.append(py)
+    # =========================================================
+    # SENARYO A: SECTOR AVG MODU (Toplu Sektör Seçimi)
+    # =========================================================
+    if is_sector_avg_mode:
+        selected_sector_names = set()
+        
+        for item in selected_keys:
+            if isinstance(item, str) and item.startswith("SEC_AVG|"):
+                sec_name = item.split("|")[1]
+                selected_sector_names.add(sec_name)
+                display_avg_count += 1
+                
+                # Görsel çizim koordinatı
+                for sc, _ in scatter_points:
+                     if sc.get_label() == f"{sec_name} Avg":
+                         if len(sc.get_offsets()) > 0:
+                             off = sc.get_offsets()[0]
+                             xs.append(off[0]); ys.append(off[1])
+                         break
+        
+        # Seçili sektörlerin tüm verisini çek
+        if current_visible_df is not None and selected_sector_names:
+            subset_df = current_visible_df[current_visible_df['Company Sector'].isin(selected_sector_names)]
+            display_cust_count = len(subset_df)
+            update_sidebar_statistics(subset_df, custom_header="Selected Sectors")
 
-      if not xs:
-            canvas.draw_idle()
-            return
+    # =========================================================
+    # SENARYO B: NORMAL MOD (TEK SEKTÖR veya ALL)
+    # =========================================================
+    else:
+        # 1. Seçili koordinatları topla
+        target_keys = set()
+        
+        for item in selected_keys:
+            # Sadece tuple olanlar (koordinat verisi)
+            if isinstance(item, tuple):
+                if len(item) == 3: _, raw_x, raw_y = item
+                else: raw_x, raw_y = item
+                
+                # Görsel Çizim için
+                px, py = to_plot_coords(raw_x, raw_y, settings_state.get("swap_axes", False))
+                xs.append(px); ys.append(py)
+                
+                # Filtreleme için Key'i sakla
+                target_keys.add(item)
 
-      # Glow boyutu: Sektör avg ise daha büyük olsun
-      s_size = 600 if is_sector_avg_mode else 300
+        # 2. Dataframe Filtreleme (Artık Churn'ler de eşleşecek!)
+        if current_visible_df is not None and target_keys:
+            def _is_selected(row):
+                # get_point_key artık Adım 1'deki düzeltme sayesinde 
+                # Churn satırları için de "Swapped MRR" üretecek ve eşleşme sağlanacak.
+                key = get_point_key(row, settings_state)
+                return key in target_keys
 
-      # ================= ESTETİK GÜNCELLEME =================
-      # Sarı/Turuncu yerine modern MAVİ tonları
-       
-      # 1. Glow (Arkada hafif mavi parıltı - alpha 0.3)
-      glow = ax.scatter(
-            xs, ys,  
-            s=s_size,  
-            c='#1f77b4',           # Altın sarısı yerine Mavi
-            alpha=0.3,              # Biraz daha şeffaf
-            edgecolors='none',  
-            zorder=2.5
-      )
-       
-      # 2. Ring (Önde net mavi çerçeve)
-      ring = ax.scatter(
-            xs, ys,  
-            s=s_size,  
-            facecolors='none',  
-            edgecolors='#1f77b4', # Turuncu yerine Mavi
-            linewidths=2.0,  
-            zorder=2.6
-      )
-      # ======================================================
+            subset_df = current_visible_df[current_visible_df.apply(_is_selected, axis=1)]
+            
+            # Sağ Paneli Güncelle
+            update_sidebar_statistics(subset_df, custom_header="Selected")
+            
+            display_cust_count = len(subset_df)
+            
+            # Label Mantığı: Seçilen nokta sayısı, Dataframe'de bulunan müşteri sayısından fazlaysa
+            # aradaki fark "Avg Point" sayısıdır (Tek sektör modundaki büyük nokta).
+            if len(target_keys) > display_cust_count:
+                display_avg_count = len(target_keys) - display_cust_count
 
-      selection_state["highlight_artists"].extend([glow, ring])
-      canvas.draw_idle()
+    # --- 3. LABEL GÜNCELLEME ---
+    info_text = ""
+    parts = []
+    
+    if is_sector_avg_mode:
+        parts.append(f"{display_avg_count} Sectors")
+    else:
+        if display_cust_count > 0:
+            parts.append(f"{display_cust_count} Customers")
+        if display_avg_count > 0:
+            parts.append(f"{display_avg_count} Avg Point")
+    
+    if parts:
+        info_text = " & ".join(parts) + " Selected"
+    else:
+        info_text = "Selection Active"
+
+    selection_info_label.config(text=info_text)
+    selection_info_label.pack(side="top", fill="x", pady=(0, 5), before=total_label)
+
+    # --- 4. GÖRSEL EFEKT ---
+    s_size = 600 if is_sector_avg_mode else 300
+    if xs:
+        glow = ax.scatter(xs, ys, s=s_size, c='#1f77b4', alpha=0.3, edgecolors='none', zorder=2.5)
+        ring = ax.scatter(xs, ys, s=s_size, facecolors='none', edgecolors='#1f77b4', linewidths=2.0, zorder=2.6)
+        selection_state["highlight_artists"].extend([glow, ring])
+
+    canvas.draw_idle()
 
 # --- OPTİMİZE EDİLMİŞ EVENTLER ---
 
