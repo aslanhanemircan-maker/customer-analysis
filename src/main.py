@@ -1237,23 +1237,30 @@ def update_plot(selected_sector, preserve_zoom=True, fit_to_data=False):
       total_customers = 0
       sector_stats_for_counts = {}
 
-      if settings_state.get("fixed_axis", False) and settings_state.get("fixed_center") is not None:
+      # ÖNEMLİ: Merkez (center) çizgileri, regresyon filtresinden etkilenmeyen
+      # visible_df_base'e göre hesaplanmalı.
+      if len(visible_df_base) > 0:
+            try:
+                  center_x = visible_df_base[x_col].astype(float).mean()
+            except Exception:
+                  center_x = visible_df_base[EFFECTIVE_MRR_COL].astype(float).mean()
+            center_y = visible_df_base['MRR Growth (%)'].astype(float).mean()
+      else:
+            try:
+                  center_x = df[x_col].astype(float).mean()
+            except Exception:
+                  center_x = df[EFFECTIVE_MRR_COL].astype(float).mean()
+            center_y = df['MRR Growth (%)'].astype(float).mean()
+
+      # Fixed Axis Mantığı: Eğer fixed_axis açıksa
+      if settings_state.get("fixed_axis", False):
+            # Eğer fixed_center henüz set edilmemişse, şu anki merkezi kaydet
+            if settings_state.get("fixed_center") is None:
+                  settings_state["fixed_center"] = (center_x, center_y)
+            # Kaydedilmiş merkez değerlerini kullan
             eff_center_x, eff_center_y = settings_state["fixed_center"]
       else:
-            # ÖNEMLİ: Merkez (center) çizgileri, regresyon filtresinden etkilenmeyen
-            # visible_df_base'e göre hesaplanmalı.
-            if len(visible_df_base) > 0:
-                  try:
-                        center_x = visible_df_base[x_col].astype(float).mean()
-                  except Exception:
-                        center_x = visible_df_base[EFFECTIVE_MRR_COL].astype(float).mean()
-                  center_y = visible_df_base['MRR Growth (%)'].astype(float).mean()
-            else:
-                  try:
-                        center_x = df[x_col].astype(float).mean()
-                  except Exception:
-                        center_x = df[EFFECTIVE_MRR_COL].astype(float).mean()
-                  center_y = df['MRR Growth (%)'].astype(float).mean()
+            # Fixed axis kapalıysa, dinamik merkez kullan
             eff_center_x, eff_center_y = center_x, center_y
 
       plot_cx, plot_cy = to_plot_coords(eff_center_x, eff_center_y, settings_state.get("swap_axes", False))
